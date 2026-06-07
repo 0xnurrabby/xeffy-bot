@@ -1,0 +1,2 @@
+# Optional. One browser user-agent per line.
+# Leave this file empty or missing to use the default Android Chrome user-agent.

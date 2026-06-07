@@ -1,0 +1,5 @@
+# Optional. One proxy per line.
+# Supported formats:
+# ip:port
+# ip:port:user:pass
+# http://user:pass@ip:port

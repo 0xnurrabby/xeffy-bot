@@ -1,0 +1,12 @@
+{
+  "threads": 1,
+  "task_enabled": true,
+  "join_enabled": true,
+  "checkin_enabled": true,
+  "delay_between_accounts": 10,
+  "repeat_enabled": false,
+  "repeat_interval": 300,
+  "proxy_enabled": false,
+  "export_csv": true,
+  "request_timeout": 30
+}

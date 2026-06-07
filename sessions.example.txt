@@ -1,0 +1,8 @@
+# Option 1: Load every .session file from a folder.
+# C:\path\to\sessions
+
+# Option 2: Load one specific .session file.
+# C:\path\to\sessions\acc_123.session
+
+# Option 3: Pyrogram session string.
+# 1AABCD_your_account_session_string

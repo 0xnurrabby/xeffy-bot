@@ -1,0 +1,7 @@
+# Optional. Hana-style Telegram WebApp query/initData lines.
+# The bot accepts:
+# - full WebApp URLs containing tgWebAppData=
+# - raw tgWebAppData=... query fragments
+# - decoded initData containing auth_date= and hash=
+#
+# Query-only accounts can check in and submit tasks, but cannot join channels.
