@@ -858,6 +858,7 @@ PAGE_TEMPLATE = Template("""<!doctype html>
       try {
         var res = await fetch("/log?t=" + Date.now());
         log.textContent = await res.text();
+        log.scrollTop = log.scrollHeight;
         if (state) state.textContent = "synced";
       } catch (error) {
         if (state) state.textContent = "offline";
