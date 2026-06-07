@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 *.session
 *.session-journal
+sessions/*
+!sessions/.gitkeep
+!sessions/README.md
 sessions.txt
 data.txt
 channel.txt

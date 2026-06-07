@@ -130,8 +130,12 @@ def load_quiz_answer():
 def load_session_sources(path="sessions.txt"):
     sources = []
     seen = set()
+    items = load_file(path)
 
-    for item in load_file(path):
+    if not items and Path("sessions").is_dir():
+        items = ["sessions"]
+
+    for item in items:
         item_path = Path(item).expanduser()
 
         if item_path.is_dir():

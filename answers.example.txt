@@ -1,3 +1,0 @@
-# Optional. Quiz answer index. Put one number only.
-# Example:
-# 0

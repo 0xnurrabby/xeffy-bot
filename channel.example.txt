@@ -1,3 +1,0 @@
-# Optional. Telegram channel/group links for Full mode.
-# One link per line.
-# https://t.me/example_channel

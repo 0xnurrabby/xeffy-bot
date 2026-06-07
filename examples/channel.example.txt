@@ -1,0 +1,5 @@
+# Optional. Used only in Full mode.
+# Add one Telegram channel/group link per line.
+#
+# Demo:
+# https://t.me/example_channel
