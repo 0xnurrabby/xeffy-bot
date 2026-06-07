@@ -920,7 +920,7 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
         )
         if error:
             if "account_already_linked" in error:
-                return {"status": "dead", "message": error}
+                return {"status": "already_linked", "message": error}
             return {"status": "failed", "message": error}
 
         oauth_url, error = create_x_oauth_url(
@@ -972,7 +972,7 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
         )
         if error:
             if "account_already_linked" in error:
-                return {"status": "dead", "message": error}
+                return {"status": "already_linked", "message": error}
             return {"status": "failed", "message": error}
 
         error = claim_x_link(
@@ -1545,6 +1545,8 @@ async def run_account(
             print(f"[Account {index}] [OK] X connected")
         elif x_result["status"] == "dead":
             print(f"[Account {index}] [WARN] X token is invalid/dead")
+        elif x_result["status"] == "already_linked":
+            print(f"[Account {index}] [WARN] X account already linked to another Xeffy user")
         else:
             print(f"[Account {index}] [WARN] X connect skipped: {x_result['message']}")
     elif config.get("auto_connect_x"):
@@ -1718,7 +1720,7 @@ def update_xtoken_files(results, x_tokens):
 
     append_connected_x_tokens(connected_tokens)
     write_x_tokens(remaining_tokens)
-    print(f"[OK] Updated xtoken.txt. Removed {len(remove_raw)} used/dead token(s).")
+    print(f"[OK] Updated xtoken.txt. Removed {len(remove_raw)} connected/dead token(s).")
 
 
 def build_export_path():
