@@ -7,7 +7,7 @@ Auditable Python version of the Xeffy Telegram Mini App runner. The public HanaP
 | File/folder | What goes here |
 | --- | --- |
 | `.env.example` | Demo Telegram `API_ID` and `API_HASH`. `setup.bat` copies it to `.env` if missing. |
-| `sessions/` | Put real Pyrogram `.session` files here. |
+| `sessions/` | Put real Pyrogram or Telethon `.session` files here. |
 | `sessions.txt` | `sessions` folder path, exact `.session` paths, or Pyrogram session strings. |
 | `data.txt` | Telegram WebApp `query` / `tgWebAppData` / decoded `initData`. |
 | `ref.txt` | Optional Telegram referral link or start parameter. |
@@ -58,6 +58,8 @@ Keep this active line in `sessions.txt`:
 ```text
 sessions
 ```
+
+Pyrogram `.session` files run directly. Telethon `.session` files are auto-converted into `.converted_sessions/` at runtime; your original file in `sessions/` is not modified.
 
 WebApp query data:
 
@@ -151,10 +153,12 @@ Do not commit real `.session` files, `.env`, real `initData`, proxies, or X toke
 
 ## Session Error
 
-`no such column: number` means the `.session` file is not a Pyrogram v2 session database. It may be from Telethon, another bot, an older Pyrogram version, or a corrupt file.
+`missing version.number column` or `no such column: number` means the `.session` file is not a Pyrogram v2 session database.
 
-Use one of these instead:
+Telethon `.session` files are supported automatically. The bot creates a Pyrogram-compatible copy in `.converted_sessions/` and leaves the original file untouched.
 
-- a fresh Pyrogram v2 `.session` file
+If it still fails, the session is probably from another bot/library, expired, logged out, or corrupt. Use one of these instead:
+
+- a fresh Pyrogram v2 or Telethon `.session` file
 - a Pyrogram session string in `sessions.txt`
 - a valid Xeffy WebApp query/initData line in `data.txt`

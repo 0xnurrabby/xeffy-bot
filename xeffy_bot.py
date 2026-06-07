@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import csv
+import hashlib
 import json
 import os
 import random
@@ -19,6 +20,8 @@ BOT_USERNAME = "Xeffy_Bot"
 ORG_SLUG = "xeffy"
 CAMPAIGN_ID = "447eb124-e731-4853-be60-39aae9bb0127"
 BASE_URL = "https://api.go.xeffy.io/api/mini"
+CONVERTED_SESSION_DIR = Path(".converted_sessions")
+PYROGRAM_SESSION_VERSION = 3
 
 API_ID = int(os.getenv("API_ID", "0") or "0")
 API_HASH = os.getenv("API_HASH", "")
@@ -747,18 +750,57 @@ def describe_account_source(source):
     return "session_string"
 
 
-def validate_pyrogram_session_file(source):
-    if source["type"] != "file":
-        return None
+PYROGRAM_SESSION_SCHEMA = """
+CREATE TABLE sessions
+(
+    dc_id     INTEGER PRIMARY KEY,
+    api_id    INTEGER,
+    test_mode INTEGER,
+    auth_key  BLOB,
+    date      INTEGER NOT NULL,
+    user_id   INTEGER,
+    is_bot    INTEGER
+);
 
-    session_path = Path(source["workdir"]) / f"{source['name']}.session"
-    if not session_path.exists():
-        return f"session file not found: {session_path}"
+CREATE TABLE peers
+(
+    id             INTEGER PRIMARY KEY,
+    access_hash    INTEGER,
+    type           INTEGER NOT NULL,
+    username       TEXT,
+    phone_number   TEXT,
+    last_update_on INTEGER NOT NULL DEFAULT (CAST(STRFTIME('%s', 'now') AS INTEGER))
+);
 
+CREATE TABLE version
+(
+    number INTEGER PRIMARY KEY
+);
+
+CREATE INDEX idx_peers_id ON peers (id);
+CREATE INDEX idx_peers_username ON peers (username);
+CREATE INDEX idx_peers_phone_number ON peers (phone_number);
+
+CREATE TRIGGER trg_peers_last_update_on
+    AFTER UPDATE
+    ON peers
+BEGIN
+    UPDATE peers
+    SET last_update_on = CAST(STRFTIME('%s', 'now') AS INTEGER)
+    WHERE id = NEW.id;
+END;
+"""
+
+
+def session_path_from_source(source):
+    return Path(source["workdir"]) / f"{source['name']}.session"
+
+
+def inspect_sqlite_session_schema(session_path):
     try:
         conn = sqlite3.connect(f"file:{session_path}?mode=ro", uri=True)
     except sqlite3.Error as e:
-        return f"cannot open session sqlite database: {e}"
+        return None, f"cannot open session sqlite database: {e}"
 
     try:
         version_columns = {
@@ -768,20 +810,51 @@ def validate_pyrogram_session_file(source):
             row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
         }
     except sqlite3.Error as e:
-        return f"cannot inspect session database: {e}"
+        return None, f"cannot inspect session database: {e}"
     finally:
         conn.close()
 
-    if "number" not in version_columns:
+    return {
+        "version_columns": version_columns,
+        "session_columns": session_columns,
+    }, None
+
+
+def is_pyrogram_session_schema(schema):
+    if not schema:
+        return False
+
+    required_session_columns = {"dc_id", "api_id", "auth_key", "user_id"}
+    return (
+        "number" in schema["version_columns"]
+        and required_session_columns.issubset(schema["session_columns"])
+    )
+
+
+def is_telethon_session_schema(schema):
+    if not schema:
+        return False
+
+    required_session_columns = {"dc_id", "server_address", "port", "auth_key"}
+    return (
+        "version" in schema["version_columns"]
+        and required_session_columns.issubset(schema["session_columns"])
+        and "number" not in schema["version_columns"]
+    )
+
+
+def invalid_pyrogram_session_message(schema):
+    if not schema or "number" not in schema["version_columns"]:
         return (
             "invalid Pyrogram session format: missing version.number column. "
             "This usually means the file was made by Telethon, an older Pyrogram, "
-            "or another bot. Use a Pyrogram v2 .session file, Pyrogram session "
-            "string, or data.txt query instead."
+            "or another bot. Telethon sessions are auto-converted when possible; "
+            "otherwise use a Pyrogram v2 .session file, Pyrogram session string, "
+            "or data.txt query instead."
         )
 
     required_session_columns = {"dc_id", "api_id", "auth_key", "user_id"}
-    missing = sorted(required_session_columns - session_columns)
+    missing = sorted(required_session_columns - schema["session_columns"])
     if missing:
         return (
             "invalid Pyrogram session format: missing sessions column(s): "
@@ -789,6 +862,110 @@ def validate_pyrogram_session_file(source):
         )
 
     return None
+
+
+def converted_session_path(source, source_path):
+    key = hashlib.sha256(str(source_path.resolve()).encode("utf-8")).hexdigest()[:12]
+    return CONVERTED_SESSION_DIR / f"{source['name']}_pyrogram_{key}.session"
+
+
+def convert_telethon_session_file(source):
+    source_path = session_path_from_source(source)
+    destination = converted_session_path(source, source_path)
+
+    try:
+        conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT dc_id, auth_key FROM sessions WHERE auth_key IS NOT NULL LIMIT 1"
+        ).fetchone()
+    except sqlite3.Error as e:
+        return None, f"cannot read Telethon session data: {e}"
+    finally:
+        try:
+            conn.close()
+        except UnboundLocalError:
+            pass
+
+    if not row:
+        return None, "Telethon session has no auth_key. Make a fresh session file."
+
+    dc_id, auth_key = row
+    if not dc_id or not auth_key:
+        return None, "Telethon session is missing dc_id/auth_key. Make a fresh session file."
+
+    CONVERTED_SESSION_DIR.mkdir(exist_ok=True)
+
+    try:
+        conn = sqlite3.connect(destination)
+        with conn:
+            conn.executescript(
+                """
+                DROP TRIGGER IF EXISTS trg_peers_last_update_on;
+                DROP TABLE IF EXISTS peers;
+                DROP TABLE IF EXISTS sessions;
+                DROP TABLE IF EXISTS version;
+                """
+            )
+            conn.executescript(PYROGRAM_SESSION_SCHEMA)
+            conn.execute(
+                "INSERT INTO version VALUES (?)",
+                (PYROGRAM_SESSION_VERSION,),
+            )
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(dc_id),
+                    API_ID,
+                    0,
+                    sqlite3.Binary(bytes(auth_key)),
+                    0,
+                    1,
+                    0,
+                ),
+            )
+    except sqlite3.Error as e:
+        return None, f"cannot create converted Pyrogram session: {e}"
+    finally:
+        try:
+            conn.close()
+        except UnboundLocalError:
+            pass
+
+    return {
+        **source,
+        "name": destination.stem,
+        "workdir": str(destination.parent),
+        "converted_from": str(source_path),
+    }, None
+
+
+def prepare_pyrogram_file_session(source):
+    if source["type"] != "file":
+        return source, None
+
+    session_path = session_path_from_source(source)
+    if not session_path.exists():
+        return source, f"session file not found: {session_path}"
+
+    schema, error = inspect_sqlite_session_schema(session_path)
+    if error:
+        return source, error
+
+    if is_pyrogram_session_schema(schema):
+        return source, None
+
+    if is_telethon_session_schema(schema):
+        converted_source, convert_error = convert_telethon_session_file(source)
+        if convert_error:
+            return source, convert_error
+        return converted_source, None
+
+    return source, invalid_pyrogram_session_message(schema)
+
+
+def validate_pyrogram_session_file(source):
+    _, error = prepare_pyrogram_file_session(source)
+    return error
 
 
 def build_result(account_index, source):
@@ -968,16 +1145,21 @@ async def run_account(
         }
 
         if source["type"] == "file":
-            session_error = validate_pyrogram_session_file(source)
+            prepared_source, session_error = prepare_pyrogram_file_session(source)
             if session_error:
                 result["status"] = "failed"
                 result["error"] = session_error
                 print(f"[Account {index}] [FAIL] {session_error}")
                 return result
 
-            client_kwargs["name"] = source["name"]
-            client_kwargs["workdir"] = source["workdir"]
-            print(f"[Account {index}] Session file: {source['name']}.session")
+            client_kwargs["name"] = prepared_source["name"]
+            client_kwargs["workdir"] = prepared_source["workdir"]
+            if prepared_source.get("converted_from"):
+                print(
+                    f"[Account {index}] Telethon session converted: "
+                    f"{Path(prepared_source['converted_from']).name}"
+                )
+            print(f"[Account {index}] Session file: {prepared_source['name']}.session")
         else:
             client_kwargs["name"] = f"acc_{index}"
             client_kwargs["session_string"] = source["value"]
