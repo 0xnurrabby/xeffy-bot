@@ -85,6 +85,55 @@ POINT_KEYS = {
     "xef",
 }
 
+X_TASK_KINDS = {
+    "twitter_post",
+    "twitter_retweet",
+    "twitter_reply",
+    "twitter_quote",
+    "twitter_follow",
+    "twitter_like",
+}
+
+X_TASK_TEXT_MARKERS = {
+    "twitter",
+    "x.com",
+    "retweet",
+    "tweet",
+    "quote tweet",
+    "x account",
+    "x post",
+}
+
+X_IDENTITY_KEYS = {
+    "screenname",
+    "provideruserid",
+    "providerusername",
+    "socialuserid",
+    "twitterid",
+    "twitterusername",
+    "xid",
+    "xusername",
+}
+
+X_IDENTITY_CONTAINER_KEYS = {
+    "data",
+    "identity",
+    "xidentity",
+    "twitteridentity",
+    "account",
+    "profile",
+    "user",
+    "social",
+}
+
+X_IDENTITY_PROVIDER_KEYS = {
+    "provider",
+    "providerid",
+    "platform",
+    "network",
+    "socialplatform",
+}
+
 Client = None
 RequestWebView = None
 PYROGRAM_IMPORT_ERROR = None
@@ -514,23 +563,51 @@ def safe_json(response):
         return None
 
 
+def normalize_key(key):
+    return str(key).replace("_", "").replace("-", "").lower()
+
+
 def find_value_by_keys(data, keys):
+    normalized_keys = {normalize_key(key) for key in keys}
     if isinstance(data, dict):
         for key, value in data.items():
-            normalized = key.replace("_", "").replace("-", "").lower()
-            if normalized in keys and value not in (None, ""):
+            normalized = normalize_key(key)
+            if normalized in normalized_keys and value not in (None, ""):
                 return value
         for value in data.values():
-            found = find_value_by_keys(value, keys)
+            found = find_value_by_keys(value, normalized_keys)
             if found not in (None, ""):
                 return found
     elif isinstance(data, list):
         for item in data:
-            found = find_value_by_keys(item, keys)
+            found = find_value_by_keys(item, normalized_keys)
             if found not in (None, ""):
                 return found
 
     return None
+
+
+def response_error_summary(response):
+    data = safe_json(response)
+    message = find_value_by_keys(data, {"message", "code", "error"})
+    if isinstance(message, dict):
+        message = find_value_by_keys(message, {"message", "code"})
+    if isinstance(message, list):
+        message = ", ".join(str(item) for item in message if item)
+
+    if message:
+        return f"{response.status_code} {message}"
+
+    text = (response.text or "").strip()
+    return f"{response.status_code} {text[:120]}".strip()
+
+
+def has_meaningful_value(value):
+    if value in (None, "", False):
+        return False
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return True
 
 
 def ensure_pyrogram():
@@ -637,9 +714,12 @@ def submit_task(session_token, task_id, proof, user_agent, proxy, config):
         )
     except req.RequestException as e:
         print(f"  Submit request failed: {e}")
-        return False
+        return False, str(e)
 
-    return r.status_code in [200, 201]
+    if r.status_code in [200, 201]:
+        return True, ""
+
+    return False, response_error_summary(r)
 
 
 def build_endpoint_url(endpoint):
@@ -687,7 +767,40 @@ def make_xeffy_web_session(session_token):
     return session
 
 
-def x_identity_connected(web_session, session_token, user_agent, proxy, config):
+def extract_x_identity(data):
+    if not data:
+        return None
+
+    if isinstance(data, list):
+        for item in data:
+            identity = extract_x_identity(item)
+            if identity:
+                return identity
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    provider = find_value_by_keys(data, X_IDENTITY_PROVIDER_KEYS)
+    if provider and str(provider).strip().lower() in {"twitter", "x"}:
+        return data
+
+    for key, value in data.items():
+        normalized = normalize_key(key)
+        if normalized in X_IDENTITY_KEYS and has_meaningful_value(value):
+            return data
+
+    for key, value in data.items():
+        normalized = normalize_key(key)
+        if normalized in X_IDENTITY_CONTAINER_KEYS:
+            identity = extract_x_identity(value)
+            if identity:
+                return identity
+
+    return None
+
+
+def get_x_identity(web_session, session_token, user_agent, proxy, config):
     try:
         r = web_session.get(
             f"{BASE_URL}/registrations/x-identity",
@@ -695,16 +808,56 @@ def x_identity_connected(web_session, session_token, user_agent, proxy, config):
             proxies=proxy,
             timeout=config["request_timeout"],
         )
-    except req.RequestException:
-        return False
+    except req.RequestException as e:
+        return None, f"x-identity request failed: {e}"
 
     if r.status_code == 204:
-        return False
+        return None, None
     if r.status_code != 200:
-        return False
+        return None, f"x-identity: {response_error_summary(r)}"
 
     data = safe_json(r)
-    return bool(data)
+    return extract_x_identity(data), None
+
+
+def x_identity_connected(web_session, session_token, user_agent, proxy, config):
+    identity, _ = get_x_identity(web_session, session_token, user_agent, proxy, config)
+    return bool(identity)
+
+
+def check_x_identity(session_token, user_agent, proxy, config):
+    web_session = make_xeffy_web_session(session_token)
+    return get_x_identity(web_session, None, user_agent, proxy, config)
+
+
+def format_x_identity(identity):
+    if not identity:
+        return ""
+
+    handle = find_value_by_keys(
+        identity,
+        {
+            "screenname",
+            "screen_name",
+            "username",
+            "handle",
+            "providerusername",
+            "twitterusername",
+            "xusername",
+        },
+    )
+    user_id = find_value_by_keys(
+        identity,
+        {"userid", "provideruserid", "socialuserid", "twitterid", "xid", "id"},
+    )
+
+    if handle:
+        handle = str(handle).strip()
+        if handle and not handle.startswith("@"):
+            handle = f"@{handle}"
+        return f"{handle} ({user_id})" if user_id else handle
+
+    return str(user_id or "")
 
 
 def prepare_x_link(web_session, session_token, user_agent, proxy, config):
@@ -950,8 +1103,27 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
     web_session = make_xeffy_web_session(session_token)
     session_cookie_header = None
 
-    if x_identity_connected(web_session, session_cookie_header, user_agent, proxy, config):
-        return {"status": "connected", "message": "already connected"}
+    identity, error = get_x_identity(
+        web_session,
+        session_cookie_header,
+        user_agent,
+        proxy,
+        config,
+    )
+    if identity:
+        return {
+            "status": "connected_existing",
+            "message": "already connected",
+            "identity": identity,
+            "used_token": False,
+        }
+    if error:
+        return {
+            "status": "failed",
+            "message": error,
+            "identity": None,
+            "used_token": False,
+        }
 
     try:
         link_code, error = prepare_x_link(
@@ -963,8 +1135,18 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
         )
         if error:
             if "account_already_linked" in error:
-                return {"status": "already_linked", "message": error}
-            return {"status": "failed", "message": error}
+                return {
+                    "status": "already_linked",
+                    "message": error,
+                    "identity": None,
+                    "used_token": False,
+                }
+            return {
+                "status": "failed",
+                "message": error,
+                "identity": None,
+                "used_token": False,
+            }
 
         oauth_url, error = create_x_oauth_url(
             web_session,
@@ -975,7 +1157,12 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
             link_code,
         )
         if error:
-            return {"status": "failed", "message": error}
+            return {
+                "status": "failed",
+                "message": error,
+                "identity": None,
+                "used_token": False,
+            }
 
         x_session = make_x_session(x_token)
         auth_code, error = fetch_x_auth_code(
@@ -987,9 +1174,19 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
             config,
         )
         if error == "dead":
-            return {"status": "dead", "message": "X token is invalid/dead"}
+            return {
+                "status": "dead",
+                "message": "X token is invalid/dead",
+                "identity": None,
+                "used_token": True,
+            }
         if error:
-            return {"status": "failed", "message": error}
+            return {
+                "status": "failed",
+                "message": error,
+                "identity": None,
+                "used_token": False,
+            }
 
         redirect_uri, error = approve_x_oauth(
             x_session,
@@ -1001,9 +1198,19 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
             config,
         )
         if error == "dead":
-            return {"status": "dead", "message": "X token is invalid/dead"}
+            return {
+                "status": "dead",
+                "message": "X token is invalid/dead",
+                "identity": None,
+                "used_token": True,
+            }
         if error:
-            return {"status": "failed", "message": error}
+            return {
+                "status": "failed",
+                "message": error,
+                "identity": None,
+                "used_token": False,
+            }
 
         returned_link_code, error = follow_xeffy_oauth_redirect(
             web_session,
@@ -1015,8 +1222,18 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
         )
         if error:
             if "account_already_linked" in error:
-                return {"status": "already_linked", "message": error}
-            return {"status": "failed", "message": error}
+                return {
+                    "status": "already_linked",
+                    "message": error,
+                    "identity": None,
+                    "used_token": True,
+                }
+            return {
+                "status": "failed",
+                "message": error,
+                "identity": None,
+                "used_token": False,
+            }
 
         error = claim_x_link(
             web_session,
@@ -1027,14 +1244,49 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
             returned_link_code,
         )
         if error:
-            return {"status": "failed", "message": error}
+            if "account_already_linked" in error:
+                return {
+                    "status": "already_linked",
+                    "message": error,
+                    "identity": None,
+                    "used_token": True,
+                }
+            return {
+                "status": "failed",
+                "message": error,
+                "identity": None,
+                "used_token": True,
+            }
 
-        if x_identity_connected(web_session, session_cookie_header, user_agent, proxy, config):
-            return {"status": "connected", "message": "oauth linked"}
+        identity, error = get_x_identity(
+            web_session,
+            session_cookie_header,
+            user_agent,
+            proxy,
+            config,
+        )
+        if identity:
+            return {
+                "status": "connected",
+                "message": "oauth linked",
+                "identity": identity,
+                "used_token": True,
+            }
 
-        return {"status": "failed", "message": "x-claim succeeded but identity missing"}
+        message = error or "x-claim succeeded but identity missing"
+        return {
+            "status": "failed",
+            "message": message,
+            "identity": None,
+            "used_token": True,
+        }
     except req.RequestException as e:
-        return {"status": "failed", "message": str(e)}
+        return {
+            "status": "failed",
+            "message": str(e),
+            "identity": None,
+            "used_token": False,
+        }
 
 
 def get_account_stats(session_token, user_agent, proxy, config):
@@ -1323,12 +1575,14 @@ def build_result(account_index, source):
         "checkin": "skipped",
         "tasks_found": 0,
         "tasks_submitted": 0,
+        "tasks_skipped": 0,
         "tasks_failed": 0,
         "points": "",
         "status": "started",
         "error": "",
         "_x_token_raw": "",
         "_x_token_line": "",
+        "_x_token_used": "",
     }
 
 
@@ -1509,6 +1763,40 @@ def is_quiz_task(task):
     return "quiz" in task_kind or "quiz" in task_name
 
 
+def is_x_task(task):
+    task_kind = str(task.get("kind", "")).strip().lower()
+    if task_kind in X_TASK_KINDS or task_kind.startswith("twitter_"):
+        return True
+
+    for item in iter_nested(task):
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            normalized = normalize_key(key)
+            if normalized in {"platform", "provider", "network", "socialplatform"}:
+                platform = str(value).strip().lower()
+                if platform in {"twitter", "x"}:
+                    return True
+
+    text_parts = []
+    for key in [
+        "name",
+        "title",
+        "description",
+        "url",
+        "targetUrl",
+        "target_url",
+        "actionUrl",
+        "action_url",
+    ]:
+        value = task.get(key)
+        if value not in (None, ""):
+            text_parts.append(str(value).lower())
+
+    text = " ".join(text_parts)
+    return any(marker in text for marker in X_TASK_TEXT_MARKERS)
+
+
 async def run_account(
     source,
     index,
@@ -1645,6 +1933,7 @@ async def run_account(
     result["points"] = extract_points(login.get("data"))
     print(f"[Account {index}] [OK] Xeffy login successful")
 
+    x_identity = None
     if config.get("auto_connect_x") and x_token:
         print(f"[Account {index}] Connecting X account...")
         x_result = await asyncio.to_thread(
@@ -1656,8 +1945,15 @@ async def run_account(
             config,
         )
         result["x_connect"] = x_result["status"]
-        if x_result["status"] == "connected":
-            print(f"[Account {index}] [OK] X connected")
+        x_identity = x_result.get("identity")
+        result["_x_token_used"] = "yes" if x_result.get("used_token") else "no"
+        if x_result["status"] in {"connected", "connected_existing"}:
+            detail = format_x_identity(x_identity)
+            suffix = f": {detail}" if detail else ""
+            if x_result["status"] == "connected_existing":
+                print(f"[Account {index}] [OK] X already connected{suffix}")
+            else:
+                print(f"[Account {index}] [OK] X connected{suffix}")
         elif x_result["status"] == "dead":
             print(f"[Account {index}] [WARN] X token is invalid/dead")
         elif x_result["status"] == "already_linked":
@@ -1666,6 +1962,22 @@ async def run_account(
             print(f"[Account {index}] [WARN] X connect skipped: {x_result['message']}")
     elif config.get("auto_connect_x"):
         print(f"[Account {index}] [WARN] auto_connect_x enabled but no xtoken available")
+
+    if not x_identity:
+        x_identity, x_identity_error = await asyncio.to_thread(
+            check_x_identity,
+            session_token,
+            user_agent,
+            proxy,
+            config,
+        )
+        if x_identity:
+            result["x_connect"] = "connected_existing"
+            detail = format_x_identity(x_identity)
+            suffix = f": {detail}" if detail else ""
+            print(f"[Account {index}] [OK] X identity verified{suffix}")
+        elif x_identity_error:
+            print(f"[Account {index}] [WARN] X identity check failed: {x_identity_error}")
 
     if config.get("checkin_enabled", True):
         ok = await asyncio.to_thread(
@@ -1716,6 +2028,14 @@ async def run_account(
         if not task_id or not can_submit:
             continue
 
+        if is_x_task(task) and not x_identity:
+            result["tasks_skipped"] += 1
+            print(
+                f"[Account {index}] [SKIP] {task_name} "
+                "(X identity is not connected in the mini app)"
+            )
+            continue
+
         if is_quiz_task(task):
             proof = build_quiz_proof(task, config)
             if proof is None:
@@ -1724,7 +2044,7 @@ async def run_account(
         else:
             proof = {}
 
-        ok = await asyncio.to_thread(
+        ok, submit_error = await asyncio.to_thread(
             submit_task,
             session_token,
             task_id,
@@ -1738,7 +2058,8 @@ async def run_account(
             print(f"[Account {index}] [OK] {task_name}")
         else:
             result["tasks_failed"] += 1
-            print(f"[Account {index}] [FAIL] {task_name}")
+            suffix = f": {submit_error}" if submit_error else ""
+            print(f"[Account {index}] [FAIL] {task_name}{suffix}")
 
         await asyncio.sleep(1)
 
@@ -1822,6 +2143,7 @@ def export_tg_x_mapping(results, path="tg_x_mapping.csv"):
         "source",
         "x_token_line",
         "x_connect",
+        "x_token_used",
         "x_token",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -1836,6 +2158,7 @@ def export_tg_x_mapping(results, path="tg_x_mapping.csv"):
                     "source": row.get("source", ""),
                     "x_token_line": row.get("_x_token_line", ""),
                     "x_connect": row.get("x_connect", ""),
+                    "x_token_used": row.get("_x_token_used", ""),
                     "x_token": row.get("_x_token_raw", ""),
                 }
             )
@@ -1851,16 +2174,19 @@ def update_xtoken_files(results, x_tokens):
         row.get("_x_token_raw")
         for row in results
         if row.get("_x_token_raw") and row.get("x_connect") == "connected"
+        and row.get("_x_token_used") == "yes"
     }
     dead_raw = {
         row.get("_x_token_raw")
         for row in results
         if row.get("_x_token_raw") and row.get("x_connect") == "dead"
+        and row.get("_x_token_used") == "yes"
     }
     already_linked_raw = {
         row.get("_x_token_raw")
         for row in results
         if row.get("_x_token_raw") and row.get("x_connect") == "already_linked"
+        and row.get("_x_token_used") == "yes"
     }
     remove_raw = connected_raw | dead_raw | already_linked_raw
 

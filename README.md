@@ -41,7 +41,7 @@ http://127.0.0.1:8787
 
 `web_gui.py` starts the local browser control panel. The GUI can edit the root text files, save config, start or stop the bot, and show live logs.
 
-The GUI dashboard shows quick stats from the latest export, including total accounts, total points, submitted tasks, failed tasks, finished accounts, and X connected count. If no export exists yet, account stats fall back to the configured session files.
+The GUI dashboard shows quick stats from the latest export, including total accounts, total points, submitted tasks, skipped tasks, failed tasks, finished accounts, and X connected count. If no export exists yet, account stats fall back to the configured session files.
 
 `xeffy_x_tools.py` is a helper for X connection troubleshooting. It can check whether a Telegram/Xeffy account currently has X connected and can call the unlink endpoint for that same account.
 
@@ -103,11 +103,13 @@ Keep a private note if you manage many accounts:
 3 | sessions/3.session | TG: @telegram3 | X: @xuser3 | xtoken line 3
 ```
 
-Connected X tokens are moved to `x_connected.txt`. Invalid or dead tokens are removed from `xtoken.txt`. Tokens that return `account_already_linked` are moved to `x_already_linked.txt` so the bot does not retry the same bad token again and again.
+Connected X tokens are moved to `x_connected.txt` only when the bot actually links that token during the run. If the Telegram/Xeffy account already has X connected, the assigned token stays in `xtoken.txt` because it was not used. Invalid or dead tokens are removed from `xtoken.txt`. Tokens that return `account_already_linked` are moved to `x_already_linked.txt` so the bot does not retry the same bad token again and again.
 
 If Xeffy says an X account is already linked to another Xeffy user, the current Telegram account cannot disconnect it because the current account has no linked X identity. You must either run unlink from the old Telegram/Xeffy account that owns that X link, or replace the token with a fresh X account that was not linked before.
 
-After every run, the bot writes a local `tg_x_mapping.csv` file. This file shows account number, Telegram username, Telegram ID, session/data source, X token line, X connect status, and the assigned X token. It is useful for checking exactly which Telegram account was paired with which X token. Because it contains private tokens, it is ignored by Git and should stay local.
+After every run, the bot writes a local `tg_x_mapping.csv` file. This file shows account number, Telegram username, Telegram ID, session/data source, X token line, X connect status, whether the token was actually used, and the assigned X token. It is useful for checking exactly which Telegram account was paired with which X token. Because it contains private tokens, it is ignored by Git and should stay local.
+
+Twitter/X tasks are only submitted after the bot verifies that the Mini App itself reports an X identity for that Telegram account. If the Mini App says X is not connected, the bot skips Twitter tasks instead of submitting them and producing repeated failures. Non-X tasks and quiz tasks still run normally.
 
 ## X Check And Unlink Helper
 

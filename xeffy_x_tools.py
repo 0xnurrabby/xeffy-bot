@@ -17,17 +17,7 @@ def print_json(label, data):
 
 def get_x_identity(session_token, user_agent, proxy, config):
     web_session = bot.make_xeffy_web_session(session_token)
-    r = web_session.get(
-        f"{bot.BASE_URL}/registrations/x-identity",
-        headers=bot.xeffy_session_headers(None, user_agent, json_body=False),
-        proxies=proxy,
-        timeout=config["request_timeout"],
-    )
-    if r.status_code == 204:
-        return None, None
-    if r.status_code == 200:
-        return bot.safe_json(r), None
-    return None, f"x-identity: {r.status_code} {r.text[:200]}"
+    return bot.get_x_identity(web_session, None, user_agent, proxy, config)
 
 
 def unlink_x_identity(session_token, user_agent, proxy, config):

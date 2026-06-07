@@ -238,9 +238,14 @@ def latest_run_summary():
     total_accounts = len(rows) if rows else account_count()
     total_points = sum(as_number(row.get("points")) for row in rows)
     submitted_tasks = sum(as_number(row.get("tasks_submitted")) for row in rows)
+    skipped_tasks = sum(as_number(row.get("tasks_skipped")) for row in rows)
     failed_tasks = sum(as_number(row.get("tasks_failed")) for row in rows)
     finished_accounts = sum(1 for row in rows if row.get("status") == "done")
-    x_connected = sum(1 for row in rows if row.get("x_connect") == "connected")
+    x_connected = sum(
+        1
+        for row in rows
+        if row.get("x_connect") in {"connected", "connected_existing"}
+    )
 
     return {
         "has_export": bool(rows),
@@ -248,6 +253,7 @@ def latest_run_summary():
         "total_accounts": total_accounts,
         "total_points": total_points,
         "submitted_tasks": submitted_tasks,
+        "skipped_tasks": skipped_tasks,
         "failed_tasks": failed_tasks,
         "finished_accounts": finished_accounts,
         "x_connected": x_connected,
@@ -290,6 +296,7 @@ def render_dashboard(message=""):
         ("Total accounts", summary["total_accounts"], "latest run / sessions", "blue"),
         ("Total points", format_number(summary["total_points"]), "latest export", "green"),
         ("Done tasks", format_number(summary["submitted_tasks"]), "submitted tasks", "red"),
+        ("Skipped tasks", format_number(summary["skipped_tasks"]), "latest run", "yellow"),
         ("X connected", summary["x_connected"], "latest run", "yellow"),
         ("Finished", summary["finished_accounts"], "completed accounts", "blue"),
         ("Failed tasks", format_number(summary["failed_tasks"]), "latest run", "red"),
