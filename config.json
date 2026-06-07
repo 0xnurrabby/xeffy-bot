@@ -1,4 +1,5 @@
 {
+  "tool_name": "Xeffy",
   "threads": 1,
   "task_enabled": true,
   "join_enabled": true,
@@ -7,6 +8,12 @@
   "repeat_enabled": false,
   "repeat_interval": 300,
   "proxy_enabled": false,
+  "auto_connect_x": false,
+  "connect_x_endpoint": "",
+  "auto_quiz_answer": true,
+  "quiz_answer_index": null,
   "export_csv": true,
+  "export_excel": true,
+  "export_points": true,
   "request_timeout": 30
 }

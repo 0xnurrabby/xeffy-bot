@@ -7,13 +7,9 @@ __pycache__/
 sessions/*
 !sessions/.gitkeep
 !sessions/README.md
-sessions.txt
-data.txt
-channel.txt
-answers.txt
-proxy.txt
-useragents.txt
-xtoken.txt
+.upstream_xeffy_bot/
+.web_runs/
+x_connected.txt
 exports/*
 !exports/.gitkeep
 *.exe

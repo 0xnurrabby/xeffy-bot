@@ -1,0 +1,8 @@
+# Optional X/Twitter token list for auto_connect_x.
+# One account per line.
+#
+# Upstream Hana format:
+auth token|ct0
+#
+# Example shape:
+# 53e530f_your_auth_token_here|2b9bf85_your_ct0_here

@@ -1,5 +1,0 @@
-# Optional quiz answer index.
-# Put one number only. Index starts from 0.
-#
-# Demo:
-# 0

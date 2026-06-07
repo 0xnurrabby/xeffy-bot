@@ -1,0 +1,9 @@
+# Put Pyrogram .session files in the sessions folder.
+# This active line loads every .session file from that folder:
+sessions
+
+# You can also add exact session files:
+# sessions\account_01.session
+
+# Or add Pyrogram session strings:
+# 1AABCD_your_pyrogram_session_string_here

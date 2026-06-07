@@ -1,0 +1,8 @@
+# Optional proxy list. One proxy per line.
+#
+# Upstream Hana format:
+ip:port:user:pass
+#
+# Other supported formats:
+# ip:port
+# http://user:pass@ip:port

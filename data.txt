@@ -1,0 +1,8 @@
+# Telegram WebApp query/initData goes here.
+# One account per line.
+#
+# Upstream Hana format:
+query
+#
+# Real example shape:
+# tgWebAppData=query_id%3D...%26auth_date%3D...%26hash%3D...

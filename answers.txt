@@ -1,0 +1,4 @@
+# Optional fallback quiz answer index.
+# Index starts from 0. The bot first tries to detect the correct quiz answer from task JSON.
+#
+# 0

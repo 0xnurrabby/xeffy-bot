@@ -1,0 +1,4 @@
+# Optional user-agent list. One browser user-agent per line.
+# Leave only comments/empty lines to use the built-in Android Chrome user-agent.
+#
+# Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36

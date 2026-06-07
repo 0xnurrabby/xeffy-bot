@@ -1,5 +1,0 @@
-# Optional. One browser user-agent per line.
-# Leave this file empty or missing to use the default Android Chrome user-agent.
-#
-# Demo:
-# Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36

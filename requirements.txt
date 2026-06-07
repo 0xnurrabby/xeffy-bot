@@ -1,4 +1,4 @@
 pyrogram==2.0.106
-tgcrypto==1.2.5
-requests==2.34.2
-python-dotenv==1.2.1
+tgcrypto==1.2.5; python_version < "3.12"
+requests>=2.32.3,<3
+python-dotenv>=1.0.1,<2
