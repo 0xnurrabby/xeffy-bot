@@ -137,3 +137,13 @@ Keep `threads` at `1` until your sessions/proxies are stable.
 ## Safety
 
 Do not commit real `.session` files, `.env`, real `initData`, proxies, or X tokens. Treat them like passwords.
+
+## Session Error
+
+`no such column: number` means the `.session` file is not a Pyrogram v2 session database. It may be from Telethon, another bot, an older Pyrogram version, or a corrupt file.
+
+Use one of these instead:
+
+- a fresh Pyrogram v2 `.session` file
+- a Pyrogram session string in `sessions.txt`
+- a valid Xeffy WebApp query/initData line in `data.txt`

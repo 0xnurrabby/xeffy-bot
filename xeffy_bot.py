@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import random
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 import urllib.parse
@@ -711,6 +712,50 @@ def describe_account_source(source):
     return "session_string"
 
 
+def validate_pyrogram_session_file(source):
+    if source["type"] != "file":
+        return None
+
+    session_path = Path(source["workdir"]) / f"{source['name']}.session"
+    if not session_path.exists():
+        return f"session file not found: {session_path}"
+
+    try:
+        conn = sqlite3.connect(f"file:{session_path}?mode=ro", uri=True)
+    except sqlite3.Error as e:
+        return f"cannot open session sqlite database: {e}"
+
+    try:
+        version_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(version)").fetchall()
+        }
+        session_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+    except sqlite3.Error as e:
+        return f"cannot inspect session database: {e}"
+    finally:
+        conn.close()
+
+    if "number" not in version_columns:
+        return (
+            "invalid Pyrogram session format: missing version.number column. "
+            "This usually means the file was made by Telethon, an older Pyrogram, "
+            "or another bot. Use a Pyrogram v2 .session file, Pyrogram session "
+            "string, or data.txt query instead."
+        )
+
+    required_session_columns = {"dc_id", "api_id", "auth_key", "user_id"}
+    missing = sorted(required_session_columns - session_columns)
+    if missing:
+        return (
+            "invalid Pyrogram session format: missing sessions column(s): "
+            f"{', '.join(missing)}"
+        )
+
+    return None
+
+
 def build_result(account_index, source):
     return {
         "account_number": account_index,
@@ -856,6 +901,13 @@ async def run_account(source, index, tele_links, mode, config, proxy, user_agent
         }
 
         if source["type"] == "file":
+            session_error = validate_pyrogram_session_file(source)
+            if session_error:
+                result["status"] = "failed"
+                result["error"] = session_error
+                print(f"[Account {index}] [FAIL] {session_error}")
+                return result
+
             client_kwargs["name"] = source["name"]
             client_kwargs["workdir"] = source["workdir"]
             print(f"[Account {index}] Session file: {source['name']}.session")
@@ -865,37 +917,43 @@ async def run_account(source, index, tele_links, mode, config, proxy, user_agent
             client_kwargs["in_memory"] = True
             print(f"[Account {index}] Session string")
 
-        async with Client(**client_kwargs) as app:
-            me = await app.get_me()
-            username = f"@{me.username}" if me.username else "(no username)"
-            result["telegram_user"] = username
-            result["telegram_id"] = str(me.id)
-            print(f"[Account {index}] {username} ({me.id})")
+        try:
+            async with Client(**client_kwargs) as app:
+                me = await app.get_me()
+                username = f"@{me.username}" if me.username else "(no username)"
+                result["telegram_user"] = username
+                result["telegram_id"] = str(me.id)
+                print(f"[Account {index}] {username} ({me.id})")
 
-            if mode == "full" and tele_links and config.get("join_enabled", True):
-                print(f"[Account {index}] Joining {len(tele_links)} channel/group link(s)...")
-                for link in tele_links:
-                    try:
-                        chat_username = (
-                            link.replace("https://t.me/", "")
-                            .replace("http://t.me/", "")
-                            .replace("t.me/", "")
-                            .strip("/")
-                        )
-                        await app.join_chat(chat_username)
-                        print(f"[Account {index}] [OK] Joined: {chat_username}")
-                    except Exception as e:
-                        print(f"[Account {index}] [WARN] Join failed for {link}: {e}")
+                if mode == "full" and tele_links and config.get("join_enabled", True):
+                    print(f"[Account {index}] Joining {len(tele_links)} channel/group link(s)...")
+                    for link in tele_links:
+                        try:
+                            chat_username = (
+                                link.replace("https://t.me/", "")
+                                .replace("http://t.me/", "")
+                                .replace("t.me/", "")
+                                .strip("/")
+                            )
+                            await app.join_chat(chat_username)
+                            print(f"[Account {index}] [OK] Joined: {chat_username}")
+                        except Exception as e:
+                            print(f"[Account {index}] [WARN] Join failed for {link}: {e}")
 
-                    await asyncio.sleep(2)
+                        await asyncio.sleep(2)
 
-            init_data = await get_init_data(app, index)
-            if not init_data:
-                result["status"] = "failed"
-                result["error"] = "missing initData"
-                return result
+                init_data = await get_init_data(app, index)
+                if not init_data:
+                    result["status"] = "failed"
+                    result["error"] = "missing initData"
+                    return result
 
-            print(f"[Account {index}] [OK] initData received")
+                print(f"[Account {index}] [OK] initData received")
+        except sqlite3.Error as e:
+            result["status"] = "failed"
+            result["error"] = f"session sqlite error: {e}"
+            print(f"[Account {index}] [FAIL] Session sqlite error: {e}")
+            return result
 
     if proxy:
         print(f"[Account {index}] HTTP proxy enabled")
