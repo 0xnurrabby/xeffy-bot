@@ -22,6 +22,11 @@ CAMPAIGN_ID = "447eb124-e731-4853-be60-39aae9bb0127"
 BASE_URL = "https://api.go.xeffy.io/api/mini"
 CONVERTED_SESSION_DIR = Path(".converted_sessions")
 PYROGRAM_SESSION_VERSION = 3
+X_OAUTH_AUTHORIZE_URL = "https://api.x.com/2/oauth2/authorize"
+X_WEB_BEARER = (
+    "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
 
 API_ID = int(os.getenv("API_ID", "0") or "0")
 API_HASH = os.getenv("API_HASH", "")
@@ -64,15 +69,6 @@ DEMO_VALUES = {
     "api_id=123456",
     "api_hash=your_api_hash_here",
 }
-
-X_CONNECT_ENDPOINT_CANDIDATES = [
-    "/social-accounts/twitter/connect",
-    "/social-accounts/x/connect",
-    "/auth/twitter/connect",
-    "/twitter/connect",
-    "/x/connect",
-    "/connect-x",
-]
 
 POINT_KEYS = {
     "point",
@@ -625,72 +621,377 @@ def build_endpoint_url(endpoint):
     return f"{BASE_URL}{endpoint}"
 
 
-def x_connect_payloads(x_token):
-    auth_token = x_token["auth_token"]
-    ct0 = x_token["ct0"]
-    return [
-        {"authToken": auth_token, "ct0": ct0},
-        {"auth_token": auth_token, "ct0": ct0},
-        {"token": auth_token, "ct0": ct0},
-        {"twitterAuthToken": auth_token, "twitterCt0": ct0},
-        {"cookies": {"auth_token": auth_token, "ct0": ct0}},
-    ]
-
-
 def is_dead_x_response(status_code, body):
     if status_code in {401, 403}:
         return True
     text = (body or "").lower()
-    return status_code == 400 and any(
+    return status_code in {400, 422} and any(
         marker in text
-        for marker in ["invalid", "expired", "dead", "unauthorized", "auth_token", "ct0"]
+        for marker in [
+            "invalid",
+            "expired",
+            "dead",
+            "unauthorized",
+            "auth_token",
+            "ct0",
+            "could not authenticate",
+        ]
     )
 
 
-def connect_x_account(session_token, x_token, user_agent, proxy, config):
-    endpoints = []
-    if config.get("connect_x_endpoint"):
-        endpoints.append(config["connect_x_endpoint"])
-    endpoints.extend(X_CONNECT_ENDPOINT_CANDIDATES)
+def xeffy_session_headers(session_token, user_agent, json_body=True):
+    headers = make_headers(session_token, user_agent)
+    if not json_body:
+        headers.pop("Content-Type", None)
+    return headers
 
+
+def x_identity_connected(web_session, session_token, user_agent, proxy, config):
+    try:
+        r = web_session.get(
+            f"{BASE_URL}/registrations/x-identity",
+            headers=xeffy_session_headers(session_token, user_agent, json_body=False),
+            proxies=proxy,
+            timeout=config["request_timeout"],
+        )
+    except req.RequestException:
+        return False
+
+    if r.status_code == 204:
+        return False
+    if r.status_code != 200:
+        return False
+
+    data = safe_json(r)
+    return bool(data)
+
+
+def prepare_x_link(web_session, session_token, user_agent, proxy, config):
+    r = web_session.post(
+        f"{BASE_URL}/registrations/x-link-prepare",
+        json={},
+        headers=xeffy_session_headers(session_token, user_agent),
+        proxies=proxy,
+        timeout=config["request_timeout"],
+    )
+    if r.status_code not in [200, 201]:
+        return None, f"x-link-prepare: {r.status_code} {r.text[:120]}"
+
+    data = safe_json(r) or {}
+    code = data.get("code")
+    if not code:
+        return None, "x-link-prepare: missing code"
+
+    return code, None
+
+
+def create_x_oauth_url(web_session, session_token, user_agent, proxy, config, link_code):
+    callback_url = f"https://t.me/{BOT_USERNAME}?startapp=xlink_{link_code}"
+    error_callback_url = f"https://t.me/{BOT_USERNAME}?startapp=xerr_{link_code}"
+
+    r = web_session.post(
+        f"{BASE_URL}/be-auth/link-social",
+        json={
+            "provider": "twitter",
+            "callbackURL": callback_url,
+            "errorCallbackURL": error_callback_url,
+            "disableRedirect": True,
+        },
+        headers=xeffy_session_headers(session_token, user_agent),
+        proxies=proxy,
+        timeout=config["request_timeout"],
+    )
+    if r.status_code not in [200, 201]:
+        return None, f"link-social: {r.status_code} {r.text[:120]}"
+
+    data = safe_json(r) or {}
+    oauth_url = data.get("url")
+    if not oauth_url:
+        return None, "link-social: missing oauth url"
+
+    return oauth_url, None
+
+
+def make_x_session(x_token):
+    session = req.Session()
+    for domain in [".x.com", ".twitter.com", "x.com", "twitter.com"]:
+        session.cookies.set("auth_token", x_token["auth_token"], domain=domain)
+        session.cookies.set("ct0", x_token["ct0"], domain=domain)
+    return session
+
+
+def x_api_headers(x_token, user_agent, oauth_url):
+    return {
+        "authorization": X_WEB_BEARER,
+        "x-csrf-token": x_token["ct0"],
+        "x-twitter-auth-type": "OAuth2Session",
+        "x-twitter-client-language": "en",
+        "user-agent": user_agent or DEFAULT_USER_AGENT,
+        "accept": "application/json, text/plain, */*",
+        "origin": "https://x.com",
+        "referer": oauth_url,
+    }
+
+
+def fetch_x_auth_code(x_session, x_token, oauth_url, user_agent, proxy, config):
+    query = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(oauth_url).query))
+    required = {
+        "client_id",
+        "code_challenge",
+        "code_challenge_method",
+        "redirect_uri",
+        "response_type",
+        "scope",
+        "state",
+    }
+    missing = sorted(required - set(query))
+    if missing:
+        return None, f"oauth url missing parameter(s): {', '.join(missing)}"
+
+    r = x_session.get(
+        X_OAUTH_AUTHORIZE_URL,
+        params=query,
+        headers=x_api_headers(x_token, user_agent, oauth_url),
+        proxies=proxy,
+        timeout=config["request_timeout"],
+    )
+
+    if is_dead_x_response(r.status_code, r.text):
+        return None, "dead"
+    if r.status_code != 200:
+        return None, f"x oauth metadata: {r.status_code} {r.text[:120]}"
+
+    data = safe_json(r) or {}
+    auth_code = data.get("auth_code")
+    if not auth_code:
+        return None, f"x oauth metadata: missing auth_code {r.text[:120]}"
+
+    return auth_code, None
+
+
+def approve_x_oauth(x_session, x_token, auth_code, oauth_url, user_agent, proxy, config):
+    headers = x_api_headers(x_token, user_agent, oauth_url)
+    headers["content-type"] = "application/x-www-form-urlencoded"
+
+    r = x_session.post(
+        X_OAUTH_AUTHORIZE_URL,
+        data={"approval": "true", "code": auth_code},
+        headers=headers,
+        proxies=proxy,
+        timeout=config["request_timeout"],
+    )
+
+    if is_dead_x_response(r.status_code, r.text):
+        return None, "dead"
+    if r.status_code not in [200, 201]:
+        return None, f"x oauth approval: {r.status_code} {r.text[:120]}"
+
+    data = safe_json(r) or {}
+    redirect_uri = data.get("redirect_uri")
+    if not redirect_uri:
+        return None, f"x oauth approval: missing redirect_uri {r.text[:120]}"
+
+    return redirect_uri, None
+
+
+def extract_x_link_code(text):
+    if not text:
+        return None
+
+    text = urllib.parse.unquote(str(text))
+    parsed = urllib.parse.urlparse(text)
+    params = urllib.parse.parse_qs(parsed.query)
+    for key in ["startapp", "start", "tgWebAppStartParam"]:
+        for value in params.get(key, []):
+            if value.startswith("xlink_"):
+                return value.removeprefix("xlink_")
+
+    marker = "xlink_"
+    if marker in text:
+        tail = text.split(marker, 1)[1]
+        return tail.split("&", 1)[0].split("#", 1)[0].split("/", 1)[0]
+
+    return None
+
+
+def extract_x_oauth_error(text):
+    if not text:
+        return None
+
+    text = urllib.parse.unquote(str(text))
+    parsed = urllib.parse.urlparse(text)
+    params = urllib.parse.parse_qs(parsed.query)
+
+    for key in ["startapp", "start", "tgWebAppStartParam"]:
+        for value in params.get(key, []):
+            if value.startswith("xerr_"):
+                error = params.get("error", [""])[0]
+                return error or "x oauth returned an error"
+
+    marker = "xerr_"
+    if marker in text:
+        if "error=" in text:
+            error = text.split("error=", 1)[1]
+            return error.split("&", 1)[0].split('"', 1)[0].split("'", 1)[0]
+        return "x oauth returned an error"
+
+    return None
+
+
+def follow_xeffy_oauth_redirect(
+    web_session,
+    session_token,
+    redirect_uri,
+    user_agent,
+    proxy,
+    config,
+):
+    current_url = redirect_uri
     last_error = ""
-    saw_missing_endpoint = False
 
-    for endpoint in dict.fromkeys(endpoints):
-        url = build_endpoint_url(endpoint)
-        for payload in x_connect_payloads(x_token):
-            try:
-                r = req.post(
-                    url,
-                    json=payload,
-                    headers=make_headers(session_token, user_agent),
-                    proxies=proxy,
-                    timeout=config["request_timeout"],
-                )
-            except req.RequestException as e:
-                last_error = str(e)
-                continue
+    for _ in range(6):
+        link_code = extract_x_link_code(current_url)
+        if link_code:
+            return link_code, None
+        oauth_error = extract_x_oauth_error(current_url)
+        if oauth_error:
+            return None, f"x oauth error: {oauth_error}"
 
-            if r.status_code in [200, 201]:
-                return {"status": "connected", "message": endpoint}
+        try:
+            r = web_session.get(
+                current_url,
+                headers=xeffy_session_headers(
+                    session_token,
+                    user_agent,
+                    json_body=False,
+                ),
+                proxies=proxy,
+                timeout=config["request_timeout"],
+                allow_redirects=False,
+            )
+        except req.RequestException as e:
+            return None, f"xeffy oauth callback: {e}"
 
-            if r.status_code in {404, 405}:
-                saw_missing_endpoint = True
-                last_error = f"{endpoint}: {r.status_code}"
-                break
+        location = r.headers.get("Location")
+        link_code = extract_x_link_code(location) or extract_x_link_code(r.text)
+        if link_code:
+            return link_code, None
+        oauth_error = extract_x_oauth_error(location) or extract_x_oauth_error(r.text)
+        if oauth_error:
+            return None, f"x oauth error: {oauth_error}"
 
-            if is_dead_x_response(r.status_code, r.text):
-                return {"status": "dead", "message": r.text[:120]}
+        if location:
+            current_url = urllib.parse.urljoin(current_url, location)
+            continue
 
-            last_error = f"{endpoint}: {r.status_code} {r.text[:120]}"
+        last_error = f"xeffy oauth callback: {r.status_code} {r.text[:120]}"
+        break
 
-    if saw_missing_endpoint and not last_error:
-        return {"status": "endpoint_not_found", "message": "No X endpoint found"}
+    return None, last_error or "xeffy oauth callback: missing xlink code"
 
-    if saw_missing_endpoint:
-        return {"status": "endpoint_not_found", "message": last_error}
 
-    return {"status": "failed", "message": last_error or "Unknown X connect failure"}
+def claim_x_link(web_session, session_token, user_agent, proxy, config, link_code):
+    r = web_session.post(
+        f"{BASE_URL}/registrations/x-claim",
+        json={"code": link_code},
+        headers=xeffy_session_headers(session_token, user_agent),
+        proxies=proxy,
+        timeout=config["request_timeout"],
+    )
+    if r.status_code in [200, 201]:
+        return None
+
+    return f"x-claim: {r.status_code} {r.text[:120]}"
+
+
+def connect_x_account(session_token, x_token, user_agent, proxy, config):
+    web_session = req.Session()
+
+    if x_identity_connected(web_session, session_token, user_agent, proxy, config):
+        return {"status": "connected", "message": "already connected"}
+
+    try:
+        link_code, error = prepare_x_link(
+            web_session,
+            session_token,
+            user_agent,
+            proxy,
+            config,
+        )
+        if error:
+            if "account_already_linked" in error:
+                return {"status": "dead", "message": error}
+            return {"status": "failed", "message": error}
+
+        oauth_url, error = create_x_oauth_url(
+            web_session,
+            session_token,
+            user_agent,
+            proxy,
+            config,
+            link_code,
+        )
+        if error:
+            return {"status": "failed", "message": error}
+
+        x_session = make_x_session(x_token)
+        auth_code, error = fetch_x_auth_code(
+            x_session,
+            x_token,
+            oauth_url,
+            user_agent,
+            proxy,
+            config,
+        )
+        if error == "dead":
+            return {"status": "dead", "message": "X token is invalid/dead"}
+        if error:
+            return {"status": "failed", "message": error}
+
+        redirect_uri, error = approve_x_oauth(
+            x_session,
+            x_token,
+            auth_code,
+            oauth_url,
+            user_agent,
+            proxy,
+            config,
+        )
+        if error == "dead":
+            return {"status": "dead", "message": "X token is invalid/dead"}
+        if error:
+            return {"status": "failed", "message": error}
+
+        returned_link_code, error = follow_xeffy_oauth_redirect(
+            web_session,
+            session_token,
+            redirect_uri,
+            user_agent,
+            proxy,
+            config,
+        )
+        if error:
+            if "account_already_linked" in error:
+                return {"status": "dead", "message": error}
+            return {"status": "failed", "message": error}
+
+        error = claim_x_link(
+            web_session,
+            session_token,
+            user_agent,
+            proxy,
+            config,
+            returned_link_code,
+        )
+        if error:
+            return {"status": "failed", "message": error}
+
+        if x_identity_connected(web_session, session_token, user_agent, proxy, config):
+            return {"status": "connected", "message": "oauth linked"}
+
+        return {"status": "failed", "message": "x-claim succeeded but identity missing"}
+    except req.RequestException as e:
+        return {"status": "failed", "message": str(e)}
 
 
 def get_account_stats(session_token, user_agent, proxy, config):
