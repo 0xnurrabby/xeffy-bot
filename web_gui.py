@@ -45,6 +45,23 @@ FILE_TITLES = {
 
 BOT_PROCESS = None
 BOT_LOCK = threading.Lock()
+LAST_RUN_OPTIONS = {
+    "accounts": "all",
+    "mode": "daily",
+    "account_number": "1",
+}
+
+ACCOUNT_LABELS = {
+    "all": "All accounts",
+    "one": "One account",
+    "start": "Start from account",
+}
+
+MODE_LABELS = {
+    "daily": "Daily: check-in + tasks",
+    "full": "Full: join + check-in + tasks",
+    "checkin": "Check-in only",
+}
 
 
 def active_lines(path):
@@ -80,25 +97,55 @@ def process_running():
         return BOT_PROCESS is not None and BOT_PROCESS.poll() is None
 
 
-def start_bot(accounts, mode, account_number):
+def normalize_run_options(accounts, mode, account_number):
+    accounts = accounts if accounts in ACCOUNT_LABELS else "all"
+    mode = mode if mode in MODE_LABELS else "daily"
+    try:
+        account_number = str(max(1, int(account_number or 1)))
+    except ValueError:
+        account_number = "1"
+
+    return {
+        "accounts": accounts,
+        "mode": mode,
+        "account_number": account_number,
+    }
+
+
+def selected_attr(current, value):
+    return " selected" if current == value else ""
+
+
+def start_bot(options):
     global BOT_PROCESS
+    global LAST_RUN_OPTIONS
 
     with BOT_LOCK:
         if BOT_PROCESS is not None and BOT_PROCESS.poll() is None:
             return False
 
+        LAST_RUN_OPTIONS = options.copy()
         RUN_DIR.mkdir(exist_ok=True)
         log_file = open(LOG_PATH, "w", encoding="utf-8")
+        log_file.write(
+            "Starting Xeffy bot from GUI\n"
+            f"Accounts: {ACCOUNT_LABELS[options['accounts']]}\n"
+            f"Account number: {options['account_number']}\n"
+            f"Mode: {MODE_LABELS[options['mode']]}\n"
+            "-" * 42
+            + "\n"
+        )
+        log_file.flush()
         command = [
             python_executable(),
             "-u",
             "xeffy_bot.py",
             "--accounts",
-            accounts,
+            options["accounts"],
             "--mode",
-            mode,
+            options["mode"],
             "--account-number",
-            str(account_number or 1),
+            options["account_number"],
         ]
         BOT_PROCESS = subprocess.Popen(
             command,
@@ -237,6 +284,7 @@ def page_shell(active, body, message=""):
 
 def render_dashboard(message=""):
     summary = latest_run_summary()
+    run_options = LAST_RUN_OPTIONS.copy()
     stats = [
         ("Total accounts", summary["total_accounts"], "latest run / sessions", "blue"),
         ("Total points", format_number(summary["total_points"]), "latest export", "green"),
@@ -286,19 +334,19 @@ def render_dashboard(message=""):
           <div class="form-grid">
             <label>Accounts
               <select name="accounts">
-                <option value="all">All accounts</option>
-                <option value="one">One account</option>
-                <option value="start">Start from account</option>
+                <option value="all"{selected_attr(run_options["accounts"], "all")}>All accounts</option>
+                <option value="one"{selected_attr(run_options["accounts"], "one")}>One account</option>
+                <option value="start"{selected_attr(run_options["accounts"], "start")}>Start from account</option>
               </select>
             </label>
             <label>Account number
-              <input name="account_number" type="number" min="1" value="1">
+              <input name="account_number" type="number" min="1" value="{html.escape(run_options["account_number"])}">
             </label>
             <label class="wide">Mode
               <select name="mode">
-                <option value="daily">Daily: check-in + tasks</option>
-                <option value="full">Full: join + check-in + tasks</option>
-                <option value="checkin">Check-in only</option>
+                <option value="daily"{selected_attr(run_options["mode"], "daily")}>Daily: check-in + tasks</option>
+                <option value="full"{selected_attr(run_options["mode"], "full")}>Full: join + check-in + tasks</option>
+                <option value="checkin"{selected_attr(run_options["mode"], "checkin")}>Check-in only</option>
               </select>
             </label>
           </div>
@@ -326,6 +374,10 @@ def render_dashboard(message=""):
             <div>
               <dt>Latest export</dt>
               <dd>{html.escape(summary["export_name"])}</dd>
+            </div>
+            <div>
+              <dt>Selected mode</dt>
+              <dd>{html.escape(MODE_LABELS[run_options["mode"]])}</dd>
             </div>
             <div>
               <dt>TG/X mapping</dt>
@@ -919,12 +971,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/run":
-            started = start_bot(
+            options = normalize_run_options(
                 values.get("accounts", ["all"])[0],
                 values.get("mode", ["daily"])[0],
                 values.get("account_number", ["1"])[0],
             )
+            started = start_bot(options)
             message = "Bot started." if started else "Bot is already running."
+            if not started:
+                message = "Bot is already running. Stop it before changing mode."
             self.send_html(render_dashboard(message))
             return
 
