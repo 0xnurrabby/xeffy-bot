@@ -41,6 +41,8 @@ http://127.0.0.1:8787
 
 `web_gui.py` starts the local browser control panel. The GUI can edit the root text files, save config, start or stop the bot, and show live logs.
 
+The GUI dashboard shows quick stats from the latest export, including total accounts, total points, submitted tasks, failed tasks, finished accounts, and X connected count. If no export exists yet, account stats fall back to the configured session files.
+
 `xeffy_x_tools.py` is a helper for X connection troubleshooting. It can check whether a Telegram/Xeffy account currently has X connected and can call the unlink endpoint for that same account.
 
 The root `.txt` files are simple input files. Each non-empty line is used as one item, and lines starting with `#` are ignored.
@@ -104,6 +106,8 @@ Keep a private note if you manage many accounts:
 Connected X tokens are moved to `x_connected.txt`. Invalid or dead tokens are removed from `xtoken.txt`. Tokens that return `account_already_linked` are moved to `x_already_linked.txt` so the bot does not retry the same bad token again and again.
 
 If Xeffy says an X account is already linked to another Xeffy user, the current Telegram account cannot disconnect it because the current account has no linked X identity. You must either run unlink from the old Telegram/Xeffy account that owns that X link, or replace the token with a fresh X account that was not linked before.
+
+After every run, the bot writes a local `tg_x_mapping.csv` file. This file shows account number, Telegram username, Telegram ID, session/data source, X token line, X connect status, and the assigned X token. It is useful for checking exactly which Telegram account was paired with which X token. Because it contains private tokens, it is ignored by Git and should stay local.
 
 ## X Check And Unlink Helper
 
@@ -196,6 +200,8 @@ Run results are written to `exports/` when export is enabled. The export include
 ## Session Errors
 
 `missing version.number column` or `no such column: number` usually means the `.session` file is not a Pyrogram v2 session database. Telethon sessions are supported and converted automatically when possible. If conversion fails, the session is probably expired, logged out, corrupt, or made by another library.
+
+If a session is already Pyrogram-compatible, the bot uses it directly and no converted copy is needed. If a session is Telethon, the bot creates a Pyrogram-compatible copy inside `.converted_sessions/` and leaves the original file untouched. You can delete `.converted_sessions/`; the bot will recreate what it needs on the next run.
 
 Use one of these instead:
 

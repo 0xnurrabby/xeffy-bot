@@ -315,6 +315,28 @@ def load_query_sources(path="data.txt"):
     return sources
 
 
+def extract_telegram_from_init_data(init_data):
+    params = urllib.parse.parse_qs(init_data or "")
+    raw_user = params.get("user", [""])[0]
+    if not raw_user:
+        return "", ""
+
+    try:
+        user = json.loads(raw_user)
+    except (TypeError, ValueError):
+        return "", ""
+
+    username = str(user.get("username") or "").strip()
+    telegram_id = str(user.get("id") or "").strip()
+    first_name = str(user.get("first_name") or "").strip()
+    last_name = str(user.get("last_name") or "").strip()
+    display_name = " ".join(part for part in [first_name, last_name] if part)
+
+    if username:
+        return f"@{username}", telegram_id
+    return display_name, telegram_id
+
+
 def extract_ref_start_param(value):
     text = value.strip()
     if not text or is_demo_value(text):
@@ -418,10 +440,13 @@ def parse_x_token(line):
 def load_x_tokens(path="xtoken.txt"):
     tokens = []
     seen = set()
-    for line in load_file(path):
+    for line_number, line in enumerate(load_file(path), start=1):
         token = parse_x_token(line)
         if not token or token["raw"] in seen:
+            if token and token["raw"] in seen:
+                print(f"[WARN] Duplicate X token skipped at xtoken.txt line {line_number}")
             continue
+        token["line"] = line_number
         seen.add(token["raw"])
         tokens.append(token)
     return tokens
@@ -453,7 +478,7 @@ def pick_proxy(proxies, account_index, config):
 
 
 def pick_x_token(x_tokens, account_index, config):
-    if not config.get("auto_connect_x") or not x_tokens:
+    if not x_tokens:
         return None
 
     token_index = account_index - 1
@@ -1303,6 +1328,7 @@ def build_result(account_index, source):
         "status": "started",
         "error": "",
         "_x_token_raw": "",
+        "_x_token_line": "",
     }
 
 
@@ -1495,6 +1521,9 @@ async def run_account(
     ref_start_param,
 ):
     result = build_result(index, source)
+    if x_token:
+        result["_x_token_raw"] = x_token["raw"]
+        result["_x_token_line"] = x_token.get("line", index)
 
     print(f"\n{'=' * 50}")
     print(f"[Account {index}] Starting...")
@@ -1503,7 +1532,9 @@ async def run_account(
 
     if source["type"] == "query":
         init_data = source["init_data"]
-        result["telegram_user"] = source["name"]
+        telegram_user, telegram_id = extract_telegram_from_init_data(init_data)
+        result["telegram_user"] = telegram_user or source["name"]
+        result["telegram_id"] = telegram_id
         print(f"[Account {index}] WebApp query from data.txt")
         if ref_start_param:
             print(
@@ -1615,7 +1646,6 @@ async def run_account(
     print(f"[Account {index}] [OK] Xeffy login successful")
 
     if config.get("auto_connect_x") and x_token:
-        result["_x_token_raw"] = x_token["raw"]
         print(f"[Account {index}] Connecting X account...")
         x_result = await asyncio.to_thread(
             connect_x_account,
@@ -1779,6 +1809,38 @@ def export_results(results, path):
             writer.writerow({key: row.get(key, "") for key in fieldnames})
 
     print(f"\n[OK] Exported CSV: {export_path}")
+
+
+def export_tg_x_mapping(results, path="tg_x_mapping.csv"):
+    if not results:
+        return
+
+    fieldnames = [
+        "account_number",
+        "telegram_user",
+        "telegram_id",
+        "source",
+        "x_token_line",
+        "x_connect",
+        "x_token",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in sorted(results, key=lambda item: item.get("account_number", 0)):
+            writer.writerow(
+                {
+                    "account_number": row.get("account_number", ""),
+                    "telegram_user": row.get("telegram_user", ""),
+                    "telegram_id": row.get("telegram_id", ""),
+                    "source": row.get("source", ""),
+                    "x_token_line": row.get("_x_token_line", ""),
+                    "x_connect": row.get("x_connect", ""),
+                    "x_token": row.get("_x_token_raw", ""),
+                }
+            )
+
+    print(f"[OK] Updated TG/X mapping: {path}")
 
 
 def update_xtoken_files(results, x_tokens):
@@ -2028,6 +2090,7 @@ async def main(selection=None, mode=None, account_number=None):
         if config.get("export_csv", True):
             export_results(results, build_export_path())
 
+        export_tg_x_mapping(results)
         update_xtoken_files(results, x_tokens)
         print("\nAll selected accounts are finished.")
 

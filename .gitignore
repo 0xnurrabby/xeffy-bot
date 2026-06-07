@@ -12,6 +12,7 @@ sessions/*
 .web_runs/
 x_connected.txt
 x_already_linked.txt
+tg_x_mapping.csv
 exports/*
 !exports/.gitkeep
 *.exe
