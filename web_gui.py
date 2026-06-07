@@ -116,7 +116,7 @@ def selected_attr(current, value):
     return " selected" if current == value else ""
 
 
-def start_bot(options):
+def start_bot(options, submitted_mode=""):
     global BOT_PROCESS
     global LAST_RUN_OPTIONS
 
@@ -131,7 +131,8 @@ def start_bot(options):
             "Starting Xeffy bot from GUI\n"
             f"Accounts: {ACCOUNT_LABELS[options['accounts']]}\n"
             f"Account number: {options['account_number']}\n"
-            f"Mode: {MODE_LABELS[options['mode']]}\n"
+            f"Submitted mode: {submitted_mode or options['mode']}\n"
+            f"Effective mode: {MODE_LABELS[options['mode']]}\n"
             "-" * 42
             + "\n"
         )
@@ -343,7 +344,7 @@ def render_dashboard(message=""):
               <input name="account_number" type="number" min="1" value="{html.escape(run_options["account_number"])}">
             </label>
             <label class="wide">Mode
-              <select name="mode">
+              <select name="selected_mode">
                 <option value="daily"{selected_attr(run_options["mode"], "daily")}>Daily: check-in + tasks</option>
                 <option value="full"{selected_attr(run_options["mode"], "full")}>Full: join + check-in + tasks</option>
                 <option value="checkin"{selected_attr(run_options["mode"], "checkin")}>Check-in only</option>
@@ -971,12 +972,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/run":
+            selected_mode = values.get(
+                "selected_mode",
+                values.get("mode", ["daily"]),
+            )[0]
             options = normalize_run_options(
                 values.get("accounts", ["all"])[0],
-                values.get("mode", ["daily"])[0],
+                selected_mode,
                 values.get("account_number", ["1"])[0],
             )
-            started = start_bot(options)
+            started = start_bot(options, selected_mode)
             message = "Bot started." if started else "Bot is already running."
             if not started:
                 message = "Bot is already running. Stop it before changing mode."

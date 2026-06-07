@@ -2015,6 +2015,15 @@ def choose_mode():
     return None
 
 
+def mode_label(mode):
+    labels = {
+        "full": "Full: join + check-in + tasks",
+        "daily": "Daily: check-in + tasks",
+        "checkin": "Check-in only",
+    }
+    return labels.get(mode, mode or "unknown")
+
+
 def select_indices(total, selection=None, account_number=None):
     if not selection:
         return choose_indices(total)
@@ -2073,6 +2082,9 @@ async def main(selection=None, mode=None, account_number=None):
         mode = choose_mode()
     if not mode:
         return
+    print(f"Selected mode    : {mode_label(mode)}")
+    if mode == "full" and not tele_links:
+        print("[WARN] Full mode selected but channel.txt has no links; join step will be skipped.")
 
     while True:
         results = await run_selected_accounts(
