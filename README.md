@@ -77,14 +77,14 @@ This removes sorting confusion. If `sessions.txt` only contains `sessions`, the 
 
 ## X Token Mapping
 
-When `auto_connect_x` is enabled, the bot maps Telegram account number to X token line number. Account 1 uses line 1 from `xtoken.txt`, account 2 uses line 2, account 3 uses line 3, and so on.
+When `auto_connect_x` is enabled, the bot maps the session filename number to the same X token line number. For example, `sessions/1.session` uses line 1 from `xtoken.txt`, `sessions/2.session` uses line 2, and `sessions/11.session` uses line 11. If a session file is not named with a number, the bot falls back to the account's run number.
 
 Example:
 
 ```text
-sessions/1.session -> xtoken.txt line 1
-sessions/2.session -> xtoken.txt line 2
-sessions/3.session -> xtoken.txt line 3
+sessions/1.session  -> xtoken.txt line 1
+sessions/2.session  -> xtoken.txt line 2
+sessions/11.session -> xtoken.txt line 11
 ```
 
 Write `xtoken.txt` in the same order:
@@ -93,6 +93,8 @@ Write `xtoken.txt` in the same order:
 auth_token_for_1|ct0_for_1
 auth_token_for_2|ct0_for_2
 auth_token_for_3|ct0_for_3
+...
+auth_token_for_11|ct0_for_11
 ```
 
 Keep a private note if you manage many accounts:
@@ -103,13 +105,13 @@ Keep a private note if you manage many accounts:
 3 | sessions/3.session | TG: @telegram3 | X: @xuser3 | xtoken line 3
 ```
 
-Connected X tokens are moved to `x_connected.txt` only when the bot actually links that token during the run. If the Telegram/Xeffy account already has X connected, the assigned token stays in `xtoken.txt` because it was not used. Invalid or dead tokens are removed from `xtoken.txt`. Tokens that return `account_already_linked` are moved to `x_already_linked.txt` so the bot does not retry the same bad token again and again.
+By default, `xtoken.txt` line mapping is preserved. The bot does not rewrite `xtoken.txt` after a run, because removing connected or dead tokens shifts the line numbers and breaks the Telegram-to-X mapping. Keep every account's token on its matching line.
 
 If Xeffy says an X account is already linked to another Xeffy user, the current Telegram account cannot disconnect it because the current account has no linked X identity. You must either run unlink from the old Telegram/Xeffy account that owns that X link, or replace the token with a fresh X account that was not linked before.
 
 After every run, the bot writes a local `tg_x_mapping.csv` file. This file shows account number, Telegram username, Telegram ID, session/data source, X token line, X connect status, whether the token was actually used, and the assigned X token. It is useful for checking exactly which Telegram account was paired with which X token. Because it contains private tokens, it is ignored by Git and should stay local.
 
-Twitter/X tasks are only submitted after the bot verifies that the Mini App itself reports an X identity for that Telegram account. If the Mini App says X is not connected, the bot skips Twitter tasks instead of submitting them and producing repeated failures. Non-X tasks and quiz tasks still run normally.
+Twitter/X tasks are only submitted after the bot verifies that the Mini App itself reports an X identity for that Telegram account. If the Mini App says X is not connected and a matching token exists, the bot tries to connect X before the first X task. If no matching token exists, the log shows the exact `xtoken.txt` line that must contain `auth_token|ct0`. The bot also performs best-effort X actions for supported tasks before submitting them: follow, like, retweet, and reply.
 
 ## X Check And Unlink Helper
 

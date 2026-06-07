@@ -48,9 +48,13 @@ DEFAULT_CONFIG = {
     "repeat_interval": 300,
     "proxy_enabled": False,
     "auto_connect_x": False,
+    "preserve_x_token_lines": True,
     "connect_x_endpoint": "",
     "auto_quiz_answer": True,
     "quiz_answer_index": None,
+    "x_task_actions": True,
+    "x_reply_text": "Great update",
+    "x_action_delay": 2,
     "export_csv": True,
     "export_excel": True,
     "export_points": True,
@@ -182,8 +186,10 @@ def normalize_config(config):
     )
     config["repeat_interval"] = as_int(config.get("repeat_interval"), 300, minimum=1)
     config["request_timeout"] = as_int(config.get("request_timeout"), 30, minimum=5)
+    config["x_action_delay"] = as_int(config.get("x_action_delay"), 2, minimum=0)
     config["quiz_answer_index"] = as_optional_int(config.get("quiz_answer_index"))
     config["connect_x_endpoint"] = str(config.get("connect_x_endpoint") or "").strip()
+    config["x_reply_text"] = str(config.get("x_reply_text") or "Great update").strip()
 
     for key in [
         "task_enabled",
@@ -192,7 +198,9 @@ def normalize_config(config):
         "repeat_enabled",
         "proxy_enabled",
         "auto_connect_x",
+        "preserve_x_token_lines",
         "auto_quiz_answer",
+        "x_task_actions",
         "export_csv",
         "export_excel",
         "export_points",
@@ -244,6 +252,18 @@ def load_file(path):
         ]
 
 
+def numeric_stem(value):
+    stem = Path(str(value)).stem
+    return int(stem) if stem.isdigit() else None
+
+
+def session_sort_key(path):
+    number = numeric_stem(path)
+    if number is not None:
+        return (0, number, str(path).lower())
+    return (1, str(path).lower())
+
+
 def load_quiz_answer(config=None):
     if config:
         config_answer = as_optional_int(config.get("quiz_answer_index"))
@@ -275,7 +295,7 @@ def load_session_sources(path="sessions.txt"):
         item_path = Path(item).expanduser()
 
         if item_path.is_dir():
-            candidates = sorted(item_path.glob("*.session"))
+            candidates = sorted(item_path.glob("*.session"), key=session_sort_key)
             if not candidates:
                 continue
         elif item_path.is_file() and item_path.suffix == ".session":
@@ -489,15 +509,23 @@ def parse_x_token(line):
 def load_x_tokens(path="xtoken.txt"):
     tokens = []
     seen = set()
-    for line_number, line in enumerate(load_file(path), start=1):
-        token = parse_x_token(line)
-        if not token or token["raw"] in seen:
-            if token and token["raw"] in seen:
-                print(f"[WARN] Duplicate X token skipped at xtoken.txt line {line_number}")
-            continue
-        token["line"] = line_number
-        seen.add(token["raw"])
-        tokens.append(token)
+    if not os.path.exists(path):
+        return tokens
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line_number, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            token = parse_x_token(line)
+            if not token or token["raw"] in seen:
+                if token and token["raw"] in seen:
+                    print(f"[WARN] Duplicate X token skipped at xtoken.txt line {line_number}")
+                continue
+            token["line"] = line_number
+            seen.add(token["raw"])
+            tokens.append(token)
     return tokens
 
 
@@ -526,8 +554,23 @@ def pick_proxy(proxies, account_index, config):
     return proxies[(account_index - 1) % len(proxies)]
 
 
-def pick_x_token(x_tokens, account_index, config):
+def expected_x_token_line(source, account_index):
+    if source and source.get("type") == "file":
+        number = numeric_stem(source.get("name", ""))
+        if number is not None:
+            return number
+    return account_index
+
+
+def pick_x_token(x_tokens, account_index, config, source=None):
     if not x_tokens:
+        return None
+
+    if config.get("preserve_x_token_lines", True):
+        expected_line = expected_x_token_line(source, account_index)
+        for token in x_tokens:
+            if token.get("line") == expected_line:
+                return token
         return None
 
     token_index = account_index - 1
@@ -921,11 +964,132 @@ def x_api_headers(x_token, user_agent, oauth_url):
         "x-csrf-token": x_token["ct0"],
         "x-twitter-auth-type": "OAuth2Session",
         "x-twitter-client-language": "en",
+        "x-twitter-active-user": "yes",
         "user-agent": user_agent or DEFAULT_USER_AGENT,
         "accept": "application/json, text/plain, */*",
         "origin": "https://x.com",
         "referer": oauth_url,
     }
+
+
+def x_form_headers(x_token, user_agent, referer):
+    headers = x_api_headers(x_token, user_agent, referer)
+    headers["content-type"] = "application/x-www-form-urlencoded"
+    return headers
+
+
+def parse_x_target(url):
+    if not url:
+        return None, None
+
+    parsed = urllib.parse.urlparse(str(url).strip())
+    path_parts = [part for part in parsed.path.split("/") if part]
+    handle = path_parts[0].lstrip("@") if path_parts else None
+    tweet_id = None
+    for index, part in enumerate(path_parts):
+        if part.lower() in {"status", "statuses"} and index + 1 < len(path_parts):
+            candidate = path_parts[index + 1]
+            if candidate.isdigit():
+                tweet_id = candidate
+                break
+
+    return handle, tweet_id
+
+
+def x_action_ok(response):
+    if response.status_code in {200, 201, 204}:
+        return True
+
+    text = (response.text or "").lower()
+    return response.status_code in {400, 403, 409} and any(
+        marker in text
+        for marker in [
+            "already",
+            "duplicate",
+            "you have already",
+            "already favorited",
+            "already retweeted",
+            "already requested",
+        ]
+    )
+
+
+def perform_x_task_action(task, x_token, user_agent, proxy, config):
+    if not x_token:
+        return False, "no X token assigned"
+
+    task_kind = str(task.get("kind", "")).strip().lower()
+    task_config = task.get("config") if isinstance(task.get("config"), dict) else {}
+    target_url = (
+        task_config.get("twitterTargetUrl")
+        or task_config.get("targetUrl")
+        or task.get("targetUrl")
+        or task.get("url")
+    )
+    handle, tweet_id = parse_x_target(target_url)
+    x_session = make_x_session(x_token)
+    referer = target_url or "https://x.com/"
+
+    try:
+        if task_kind == "twitter_follow":
+            if not handle:
+                return False, "missing X handle"
+            r = x_session.post(
+                "https://x.com/i/api/1.1/friendships/create.json",
+                data={
+                    "screen_name": handle,
+                    "skip_status": "true",
+                    "include_profile_interstitial_type": "1",
+                },
+                headers=x_form_headers(x_token, user_agent, referer),
+                proxies=proxy,
+                timeout=config["request_timeout"],
+            )
+        elif task_kind == "twitter_like":
+            if not tweet_id:
+                return False, "missing X post id"
+            r = x_session.post(
+                "https://x.com/i/api/1.1/favorites/create.json",
+                data={"id": tweet_id, "include_entities": "true"},
+                headers=x_form_headers(x_token, user_agent, referer),
+                proxies=proxy,
+                timeout=config["request_timeout"],
+            )
+        elif task_kind == "twitter_retweet":
+            if not tweet_id:
+                return False, "missing X post id"
+            r = x_session.post(
+                f"https://x.com/i/api/1.1/statuses/retweet/{tweet_id}.json",
+                data={"trim_user": "false"},
+                headers=x_form_headers(x_token, user_agent, referer),
+                proxies=proxy,
+                timeout=config["request_timeout"],
+            )
+        elif task_kind == "twitter_reply":
+            if not tweet_id:
+                return False, "missing X post id"
+            reply_text = config.get("x_reply_text") or "Great update"
+            r = x_session.post(
+                "https://x.com/i/api/1.1/statuses/update.json",
+                data={
+                    "status": reply_text,
+                    "in_reply_to_status_id": tweet_id,
+                    "auto_populate_reply_metadata": "true",
+                    "batch_mode": "off",
+                },
+                headers=x_form_headers(x_token, user_agent, referer),
+                proxies=proxy,
+                timeout=config["request_timeout"],
+            )
+        else:
+            return True, "no X action needed"
+    except req.RequestException as e:
+        return False, str(e)
+
+    if x_action_ok(r):
+        return True, ""
+
+    return False, response_error_summary(r)
 
 
 def fetch_x_auth_code(x_session, x_token, oauth_url, user_agent, proxy, config):
@@ -1812,6 +1976,8 @@ async def run_account(
     if x_token:
         result["_x_token_raw"] = x_token["raw"]
         result["_x_token_line"] = x_token.get("line", index)
+    elif config.get("preserve_x_token_lines", True):
+        result["_x_token_line"] = expected_x_token_line(source, index)
 
     print(f"\n{'=' * 50}")
     print(f"[Account {index}] Starting...")
@@ -1934,7 +2100,9 @@ async def run_account(
     print(f"[Account {index}] [OK] Xeffy login successful")
 
     x_identity = None
+    x_connect_attempted = False
     if config.get("auto_connect_x") and x_token:
+        x_connect_attempted = True
         print(f"[Account {index}] Connecting X account...")
         x_result = await asyncio.to_thread(
             connect_x_account,
@@ -1961,7 +2129,11 @@ async def run_account(
         else:
             print(f"[Account {index}] [WARN] X connect skipped: {x_result['message']}")
     elif config.get("auto_connect_x"):
-        print(f"[Account {index}] [WARN] auto_connect_x enabled but no xtoken available")
+        expected_line = expected_x_token_line(source, index)
+        print(
+            f"[Account {index}] [WARN] auto_connect_x enabled but no X token assigned; "
+            f"expected xtoken.txt line {expected_line}"
+        )
 
     if not x_identity:
         x_identity, x_identity_error = await asyncio.to_thread(
@@ -2024,15 +2196,42 @@ async def run_account(
         task_id = task.get("id")
         task_name = task.get("name", "unknown")
         can_submit = task.get("canSubmit", False)
+        x_task = is_x_task(task)
 
         if not task_id or not can_submit:
             continue
 
-        if is_x_task(task) and not x_identity:
+        if x_task and not x_identity and x_token and not x_connect_attempted:
+            x_connect_attempted = True
+            print(f"[Account {index}] X identity missing before X task; connecting X account...")
+            x_result = await asyncio.to_thread(
+                connect_x_account,
+                session_token,
+                x_token,
+                user_agent,
+                proxy,
+                config,
+            )
+            result["x_connect"] = x_result["status"]
+            x_identity = x_result.get("identity")
+            result["_x_token_used"] = "yes" if x_result.get("used_token") else "no"
+            if x_identity:
+                detail = format_x_identity(x_identity)
+                suffix = f": {detail}" if detail else ""
+                print(f"[Account {index}] [OK] X connected for tasks{suffix}")
+            else:
+                print(f"[Account {index}] [WARN] X connect failed before task: {x_result['message']}")
+
+        if x_task and not x_identity:
             result["tasks_skipped"] += 1
+            if x_token:
+                reason = f"X identity is not connected in the mini app; connect status: {result['x_connect']}"
+            else:
+                expected_line = expected_x_token_line(source, index)
+                reason = f"missing X token; put auth_token|ct0 at xtoken.txt line {expected_line}"
             print(
                 f"[Account {index}] [SKIP] {task_name} "
-                "(X identity is not connected in the mini app)"
+                f"({reason})"
             )
             continue
 
@@ -2043,6 +2242,28 @@ async def run_account(
                 continue
         else:
             proof = {}
+
+        if x_task and config.get("x_task_actions", True):
+            if x_token:
+                action_ok, action_error = await asyncio.to_thread(
+                    perform_x_task_action,
+                    task,
+                    x_token,
+                    user_agent,
+                    proxy,
+                    config,
+                )
+                if action_ok:
+                    print(f"[Account {index}] [OK] X action done: {task_name}")
+                    if config.get("x_action_delay", 0):
+                        await asyncio.sleep(config["x_action_delay"])
+                else:
+                    print(
+                        f"[Account {index}] [WARN] X action failed before submit: "
+                        f"{task_name}: {action_error}"
+                    )
+            else:
+                print(f"[Account {index}] [WARN] No X token for X action: {task_name}")
 
         ok, submit_error = await asyncio.to_thread(
             submit_task,
@@ -2091,7 +2312,7 @@ async def run_account_safe(
 ):
     proxy = pick_proxy(proxies, index, config)
     user_agent = pick_user_agent(user_agents)
-    x_token = pick_x_token(x_tokens, index, config)
+    x_token = pick_x_token(x_tokens, index, config, source)
 
     try:
         return await run_account(
@@ -2168,6 +2389,11 @@ def export_tg_x_mapping(results, path="tg_x_mapping.csv"):
 
 def update_xtoken_files(results, x_tokens):
     if not x_tokens:
+        return
+
+    config = load_config()
+    if config.get("preserve_x_token_lines", True):
+        print("[OK] Preserved xtoken.txt line mapping; token file was not rewritten.")
         return
 
     connected_raw = {
