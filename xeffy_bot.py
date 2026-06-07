@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_USERNAME = "Xeffy_Bot"
+MINI_APP_SHORTNAME = "xeffy_app"
 ORG_SLUG = "xeffy"
 CAMPAIGN_ID = "447eb124-e731-4853-be60-39aae9bb0127"
 BASE_URL = "https://api.go.xeffy.io/api/mini"
@@ -646,6 +647,17 @@ def xeffy_session_headers(session_token, user_agent, json_body=True):
     return headers
 
 
+def make_xeffy_web_session(session_token):
+    session = req.Session()
+    session.cookies.set(
+        "__Secure-xeffy_contrib.session_token",
+        session_token,
+        domain="api.go.xeffy.io",
+        path="/",
+    )
+    return session
+
+
 def x_identity_connected(web_session, session_token, user_agent, proxy, config):
     try:
         r = web_session.get(
@@ -686,8 +698,9 @@ def prepare_x_link(web_session, session_token, user_agent, proxy, config):
 
 
 def create_x_oauth_url(web_session, session_token, user_agent, proxy, config, link_code):
-    callback_url = f"https://t.me/{BOT_USERNAME}?startapp=xlink_{link_code}"
-    error_callback_url = f"https://t.me/{BOT_USERNAME}?startapp=xerr_{link_code}"
+    mini_app_path = f"{BOT_USERNAME}/{MINI_APP_SHORTNAME}" if MINI_APP_SHORTNAME else BOT_USERNAME
+    callback_url = f"https://t.me/{mini_app_path}?startapp=xlink_{link_code}"
+    error_callback_url = f"https://t.me/{mini_app_path}?startapp=xerr_{link_code}"
 
     r = web_session.post(
         f"{BASE_URL}/be-auth/link-social",
@@ -905,15 +918,16 @@ def claim_x_link(web_session, session_token, user_agent, proxy, config, link_cod
 
 
 def connect_x_account(session_token, x_token, user_agent, proxy, config):
-    web_session = req.Session()
+    web_session = make_xeffy_web_session(session_token)
+    session_cookie_header = None
 
-    if x_identity_connected(web_session, session_token, user_agent, proxy, config):
+    if x_identity_connected(web_session, session_cookie_header, user_agent, proxy, config):
         return {"status": "connected", "message": "already connected"}
 
     try:
         link_code, error = prepare_x_link(
             web_session,
-            session_token,
+            session_cookie_header,
             user_agent,
             proxy,
             config,
@@ -925,7 +939,7 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
 
         oauth_url, error = create_x_oauth_url(
             web_session,
-            session_token,
+            session_cookie_header,
             user_agent,
             proxy,
             config,
@@ -964,7 +978,7 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
 
         returned_link_code, error = follow_xeffy_oauth_redirect(
             web_session,
-            session_token,
+            session_cookie_header,
             redirect_uri,
             user_agent,
             proxy,
@@ -977,7 +991,7 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
 
         error = claim_x_link(
             web_session,
-            session_token,
+            session_cookie_header,
             user_agent,
             proxy,
             config,
@@ -986,7 +1000,7 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
         if error:
             return {"status": "failed", "message": error}
 
-        if x_identity_connected(web_session, session_token, user_agent, proxy, config):
+        if x_identity_connected(web_session, session_cookie_header, user_agent, proxy, config):
             return {"status": "connected", "message": "oauth linked"}
 
         return {"status": "failed", "message": "x-claim succeeded but identity missing"}
