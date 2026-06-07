@@ -24,11 +24,13 @@ The root text files already contain demo placeholders, so you can see the exact 
 
 ## Setup
 
-Install Python 3.11, then run:
+Install Python 3.11 or newer, then run:
 
 ```bat
 setup.bat
 ```
+
+If setup cannot create `.venv`, install Python from `https://www.python.org/downloads/` and tick `Add python.exe to PATH` during install.
 
 Open `.env` and replace the demo values:
 
