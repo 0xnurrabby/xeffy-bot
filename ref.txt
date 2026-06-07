@@ -1,0 +1,5 @@
+# Optional Telegram referral link/start parameter.
+# Paste the full link or only the start parameter.
+#
+# Example:
+https://t.me/Xeffy_Bot?start=ref_5005957731

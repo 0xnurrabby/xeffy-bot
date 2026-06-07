@@ -20,6 +20,7 @@ EDITABLE_FILES = [
     "config.json",
     "sessions.txt",
     "data.txt",
+    "ref.txt",
     "channel.txt",
     "answers.txt",
     "proxy.txt",

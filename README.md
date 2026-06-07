@@ -10,6 +10,7 @@ Auditable Python version of the Xeffy Telegram Mini App runner. The public HanaP
 | `sessions/` | Put real Pyrogram `.session` files here. |
 | `sessions.txt` | `sessions` folder path, exact `.session` paths, or Pyrogram session strings. |
 | `data.txt` | Telegram WebApp `query` / `tgWebAppData` / decoded `initData`. |
+| `ref.txt` | Optional Telegram referral link or start parameter. |
 | `proxy.txt` | Proxies. Upstream format: `ip:port:user:pass`. |
 | `xtoken.txt` | Optional X/Twitter token lines. Upstream format: `auth token|ct0`. |
 | `useragents.txt` | Optional browser user-agent rotation. |
@@ -65,6 +66,16 @@ tgWebAppData=query_id%3D...%26auth_date%3D...%26hash%3D...
 ```
 
 `data.txt` accounts can check in and submit tasks, but cannot join channels.
+
+## Referral Link
+
+Put your referral link in `ref.txt`:
+
+```text
+https://t.me/Xeffy_Bot?start=ref_5005957731
+```
+
+For session accounts, the bot sends `/start ref_...` and passes the same value as Mini App `start_param`. For `data.txt` accounts, capture the WebApp query/initData using the referral link first.
 
 ## X Connect
 

@@ -311,6 +311,41 @@ def load_query_sources(path="data.txt"):
     return sources
 
 
+def extract_ref_start_param(value):
+    text = value.strip()
+    if not text or is_demo_value(text):
+        return None
+
+    if text.lower().startswith("/start"):
+        parts = text.split(maxsplit=1)
+        return parts[1].strip() if len(parts) == 2 else None
+
+    if text.lower().startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(text)
+        params = urllib.parse.parse_qs(parsed.query)
+        for key in ["start", "startapp"]:
+            if params.get(key):
+                return params[key][0].strip() or None
+        return None
+
+    if "start=" in text or "startapp=" in text:
+        params = urllib.parse.parse_qs(text.lstrip("?"))
+        for key in ["start", "startapp"]:
+            if params.get(key):
+                return params[key][0].strip() or None
+
+    return text
+
+
+def load_ref_start_param(path="ref.txt"):
+    for item in load_file(path):
+        ref_start_param = extract_ref_start_param(item)
+        if ref_start_param:
+            return ref_start_param
+
+    return None
+
+
 def load_account_sources():
     return load_session_sources("sessions.txt") + load_query_sources("data.txt")
 
@@ -775,15 +810,32 @@ def build_result(account_index, source):
     }
 
 
-async def get_init_data(app, account_index):
+async def apply_referral(app, account_index, ref_start_param):
+    if not ref_start_param:
+        return
+
+    try:
+        await app.send_message(BOT_USERNAME, f"/start {ref_start_param}")
+        print(f"[Account {account_index}] [OK] Referral applied: {ref_start_param}")
+        await asyncio.sleep(1)
+    except Exception as e:
+        print(f"[Account {account_index}] [WARN] Referral start failed: {e}")
+
+
+async def get_init_data(app, account_index, ref_start_param=None):
     bot_peer = await app.resolve_peer(BOT_USERNAME)
+    request_kwargs = {
+        "peer": bot_peer,
+        "bot": bot_peer,
+        "platform": "android",
+        "url": "https://tg.go.xeffy.io/",
+    }
+
+    if ref_start_param:
+        request_kwargs["start_param"] = ref_start_param
+
     web_view = await app.invoke(
-        RequestWebView(
-            peer=bot_peer,
-            bot=bot_peer,
-            platform="android",
-            url="https://tg.go.xeffy.io/",
-        )
+        RequestWebView(**request_kwargs)
     )
 
     url = web_view.url
@@ -868,7 +920,17 @@ def is_quiz_task(task):
     return "quiz" in task_kind or "quiz" in task_name
 
 
-async def run_account(source, index, tele_links, mode, config, proxy, user_agent, x_token):
+async def run_account(
+    source,
+    index,
+    tele_links,
+    mode,
+    config,
+    proxy,
+    user_agent,
+    x_token,
+    ref_start_param,
+):
     result = build_result(index, source)
 
     print(f"\n{'=' * 50}")
@@ -880,6 +942,11 @@ async def run_account(source, index, tele_links, mode, config, proxy, user_agent
         init_data = source["init_data"]
         result["telegram_user"] = source["name"]
         print(f"[Account {index}] WebApp query from data.txt")
+        if ref_start_param:
+            print(
+                f"[Account {index}] [WARN] Referral cannot be applied to data.txt accounts; "
+                "capture initData with the referral link instead."
+            )
         if mode == "full" and tele_links and config.get("join_enabled", True):
             print(f"[Account {index}] [WARN] Channel join skipped for data.txt query accounts")
     else:
@@ -925,6 +992,8 @@ async def run_account(source, index, tele_links, mode, config, proxy, user_agent
                 result["telegram_id"] = str(me.id)
                 print(f"[Account {index}] {username} ({me.id})")
 
+                await apply_referral(app, index, ref_start_param)
+
                 if mode == "full" and tele_links and config.get("join_enabled", True):
                     print(f"[Account {index}] Joining {len(tele_links)} channel/group link(s)...")
                     for link in tele_links:
@@ -942,7 +1011,7 @@ async def run_account(source, index, tele_links, mode, config, proxy, user_agent
 
                         await asyncio.sleep(2)
 
-                init_data = await get_init_data(app, index)
+                init_data = await get_init_data(app, index, ref_start_param)
                 if not init_data:
                     result["status"] = "failed"
                     result["error"] = "missing initData"
@@ -1088,13 +1157,33 @@ async def run_account(source, index, tele_links, mode, config, proxy, user_agent
     return result
 
 
-async def run_account_safe(source, index, tele_links, mode, config, proxies, user_agents, x_tokens):
+async def run_account_safe(
+    source,
+    index,
+    tele_links,
+    mode,
+    config,
+    proxies,
+    user_agents,
+    x_tokens,
+    ref_start_param,
+):
     proxy = pick_proxy(proxies, index, config)
     user_agent = pick_user_agent(user_agents)
     x_token = pick_x_token(x_tokens, index, config)
 
     try:
-        return await run_account(source, index, tele_links, mode, config, proxy, user_agent, x_token)
+        return await run_account(
+            source,
+            index,
+            tele_links,
+            mode,
+            config,
+            proxy,
+            user_agent,
+            x_token,
+            ref_start_param,
+        )
     except Exception as e:
         print(f"[Account {index}] [FAIL] Unexpected error: {e}")
         result = build_result(index, source)
@@ -1158,7 +1247,17 @@ def safe_thread_count(config, selected_count):
     return min(config["threads"], selected_count, 20)
 
 
-async def run_selected_accounts(accounts, indices, tele_links, mode, config, proxies, user_agents, x_tokens):
+async def run_selected_accounts(
+    accounts,
+    indices,
+    tele_links,
+    mode,
+    config,
+    proxies,
+    user_agents,
+    x_tokens,
+    ref_start_param,
+):
     if not indices:
         return []
 
@@ -1178,6 +1277,7 @@ async def run_selected_accounts(accounts, indices, tele_links, mode, config, pro
                     proxies,
                     user_agents,
                     x_tokens,
+                    ref_start_param,
                 )
             )
             if pos != len(indices) - 1:
@@ -1199,12 +1299,13 @@ async def run_selected_accounts(accounts, indices, tele_links, mode, config, pro
                 proxies,
                 user_agents,
                 x_tokens,
+                ref_start_param,
             )
 
     return await asyncio.gather(*(limited_run(i) for i in indices))
 
 
-def print_menu(total, channel_count, query_count, proxy_count, x_token_count, config):
+def print_menu(total, channel_count, query_count, proxy_count, x_token_count, ref_start_param, config):
     print()
     print("=" * 42)
     print(config.get("tool_name", "XEFFY BOT").upper())
@@ -1214,6 +1315,7 @@ def print_menu(total, channel_count, query_count, proxy_count, x_token_count, co
     print(f"Channel links     : {channel_count}")
     print(f"Proxy entries     : {proxy_count}")
     print(f"X token entries   : {x_token_count}")
+    print(f"Referral          : {ref_start_param or 'none'}")
     print(f"Worker threads    : {config['threads']}")
     print("-" * 42)
     print("Account selection")
@@ -1302,9 +1404,18 @@ async def main(selection=None, mode=None, account_number=None):
     proxies = load_proxies("proxy.txt")
     user_agents = load_user_agents("useragents.txt")
     x_tokens = load_x_tokens("xtoken.txt")
+    ref_start_param = load_ref_start_param("ref.txt")
     total = len(accounts)
 
-    print_menu(total, len(tele_links), query_count, len(proxies), len(x_tokens), config)
+    print_menu(
+        total,
+        len(tele_links),
+        query_count,
+        len(proxies),
+        len(x_tokens),
+        ref_start_param,
+        config,
+    )
 
     if total == 0:
         print("No accounts found. Check sessions.txt or data.txt.")
@@ -1329,6 +1440,7 @@ async def main(selection=None, mode=None, account_number=None):
             proxies,
             user_agents,
             x_tokens,
+            ref_start_param,
         )
 
         if config.get("export_csv", True):
