@@ -11,6 +11,7 @@ sessions/*
 .upstream_xeffy_bot/
 .web_runs/
 x_connected.txt
+x_already_linked.txt
 exports/*
 !exports/.gitkeep
 *.exe

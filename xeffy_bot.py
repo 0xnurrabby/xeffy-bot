@@ -207,6 +207,10 @@ def load_quiz_answer(config=None):
     return None
 
 
+def load_quiz_answer_lines(path="answers.txt"):
+    return load_file(path)
+
+
 def load_session_sources(path="sessions.txt"):
     sources = []
     seen = set()
@@ -1353,6 +1357,73 @@ def iter_nested(data):
             yield from iter_nested(item)
 
 
+def normalize_quiz_text(value):
+    return " ".join(str(value).strip().casefold().split())
+
+
+def option_text_values(option):
+    if isinstance(option, (str, int, float)):
+        return [str(option)]
+    if not isinstance(option, dict):
+        return []
+
+    values = []
+    for key in [
+        "text",
+        "label",
+        "name",
+        "title",
+        "value",
+        "answer",
+        "option",
+        "content",
+    ]:
+        value = option.get(key)
+        if isinstance(value, (str, int, float)):
+            values.append(str(value))
+    return values
+
+
+def iter_quiz_option_lists(task):
+    option_keys = {
+        "options",
+        "answers",
+        "choices",
+        "quizoptions",
+        "answeroptions",
+    }
+
+    for item in iter_nested(task):
+        if not isinstance(item, dict):
+            continue
+
+        for key, value in item.items():
+            normalized = key.replace("_", "").replace("-", "").lower()
+            if normalized in option_keys and isinstance(value, list):
+                yield value
+
+
+def infer_quiz_answer_from_text(task, answer_lines):
+    answers = [
+        normalize_quiz_text(answer)
+        for answer in answer_lines
+        if answer and as_optional_int(answer) is None
+    ]
+    if not answers:
+        return None
+
+    for options in iter_quiz_option_lists(task):
+        for index, option in enumerate(options):
+            option_values = {
+                normalize_quiz_text(value) for value in option_text_values(option)
+            }
+            for answer in answers:
+                if answer in option_values:
+                    return index
+
+    return None
+
+
 def infer_quiz_answer(task):
     index_keys = {
         "correctindex",
@@ -1376,11 +1447,7 @@ def infer_quiz_answer(task):
         if not isinstance(item, dict):
             continue
 
-        for options_key in ["options", "answers", "choices"]:
-            options = item.get(options_key)
-            if not isinstance(options, list):
-                continue
-
+        for options in iter_quiz_option_lists(item):
             for index, option in enumerate(options):
                 if not isinstance(option, dict):
                     continue
@@ -1396,6 +1463,10 @@ def build_quiz_proof(task, config):
     answer_index = None
     if config.get("auto_quiz_answer", True):
         answer_index = infer_quiz_answer(task)
+
+    answer_lines = load_quiz_answer_lines()
+    if answer_index is None:
+        answer_index = infer_quiz_answer_from_text(task, answer_lines)
 
     if answer_index is None:
         answer_index = load_quiz_answer(config)
@@ -1724,17 +1795,29 @@ def update_xtoken_files(results, x_tokens):
         for row in results
         if row.get("_x_token_raw") and row.get("x_connect") == "dead"
     }
-    remove_raw = connected_raw | dead_raw
+    already_linked_raw = {
+        row.get("_x_token_raw")
+        for row in results
+        if row.get("_x_token_raw") and row.get("x_connect") == "already_linked"
+    }
+    remove_raw = connected_raw | dead_raw | already_linked_raw
 
     if not remove_raw:
         return
 
     connected_tokens = [token for token in x_tokens if token["raw"] in connected_raw]
+    already_linked_tokens = [
+        token for token in x_tokens if token["raw"] in already_linked_raw
+    ]
     remaining_tokens = [token for token in x_tokens if token["raw"] not in remove_raw]
 
     append_connected_x_tokens(connected_tokens)
+    append_connected_x_tokens(already_linked_tokens, "x_already_linked.txt")
     write_x_tokens(remaining_tokens)
-    print(f"[OK] Updated xtoken.txt. Removed {len(remove_raw)} connected/dead token(s).")
+    print(
+        "[OK] Updated xtoken.txt. Removed "
+        f"{len(remove_raw)} connected/dead/already-linked token(s)."
+    )
 
 
 def build_export_path():

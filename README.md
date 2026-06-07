@@ -1,111 +1,29 @@
 # Xeffy Bot
 
-Auditable Python version of the Xeffy Telegram Mini App runner. The public HanaPromax repo ships the real runner as a compiled `main.exe`; this repo keeps the workflow readable and editable.
+Xeffy Bot is a readable Python runner for the Xeffy Telegram Mini App workflow. It can log in with Telegram session files or captured WebApp initData, run daily check-in, join configured Telegram channels, submit available tasks, connect an X account when a token is provided, and export results after each run.
 
-## Files
+This repository is meant to be easy to audit and edit. The upstream public runner ships as a compiled executable, while this version keeps the logic in Python files so you can see how accounts, X tokens, quiz answers, and exports are handled.
 
-| File/folder | What goes here |
-| --- | --- |
-| `.env.example` | Demo Telegram `API_ID` and `API_HASH`. `setup.bat` copies it to `.env` if missing. |
-| `sessions/` | Put real Pyrogram or Telethon `.session` files here. |
-| `sessions.txt` | `sessions` folder path, exact `.session` paths, or Pyrogram session strings. |
-| `data.txt` | Telegram WebApp `query` / `tgWebAppData` / decoded `initData`. |
-| `ref.txt` | Optional Telegram referral link or start parameter. |
-| `proxy.txt` | Proxies. Upstream format: `ip:port:user:pass`. |
-| `xtoken.txt` | Optional X/Twitter token lines. Upstream format: `auth token|ct0`. |
-| `useragents.txt` | Optional browser user-agent rotation. |
-| `channel.txt` | Optional Telegram channel/group links for Full mode. |
-| `answers.txt` | Optional fallback quiz answer index. |
-| `config.json` | Threads and feature toggles. |
-| `exports/` | CSV result files. |
-| `xeffy_bot.py` | CLI bot. |
-| `web_gui.py` / `gui.bat` | Local browser control panel. |
+## Quick Start
 
-The root text files already contain demo placeholders, so you can see the exact format directly in each file.
+Install Python 3.11 or newer first. On Windows, run `setup.bat` from this folder. The setup script creates `.venv`, installs the packages from `requirements.txt`, and copies `.env.example` to `.env` if `.env` does not exist yet.
 
-## Setup
-
-Install Python 3.11 or newer, then run:
-
-```bat
-setup.bat
-```
-
-If setup cannot create `.venv`, install Python from `https://www.python.org/downloads/` and tick `Add python.exe to PATH` during install.
-
-Open `.env` and replace the demo values:
+Open `.env` and put your Telegram API credentials:
 
 ```env
 API_ID=123456
 API_HASH=your_api_hash_here
 ```
 
-Get these from `https://my.telegram.org`.
+You can get `API_ID` and `API_HASH` from `https://my.telegram.org`. Without these values, session-file login cannot work.
 
-## Account Input
-
-Use at least one account source.
-
-Session files:
-
-```text
-sessions/account_01.session
-sessions/account_02.session
-```
-
-Keep this active line in `sessions.txt`:
-
-```text
-sessions
-```
-
-Pyrogram `.session` files run directly. Telethon `.session` files are auto-converted into `.converted_sessions/` at runtime; your original file in `sessions/` is not modified.
-
-WebApp query data:
-
-```text
-tgWebAppData=query_id%3D...%26auth_date%3D...%26hash%3D...
-```
-
-`data.txt` accounts can check in and submit tasks, but cannot join channels.
-
-## Referral Link
-
-Put your referral link in `ref.txt`:
-
-```text
-https://t.me/Xeffy_Bot?start=ref_5005957731
-```
-
-For session accounts, the bot sends `/start ref_...` and passes the same value as Mini App `start_param`. For `data.txt` accounts, capture the WebApp query/initData using the referral link first.
-
-## X Connect
-
-Set this in `config.json`:
-
-```json
-"auto_connect_x": true
-```
-
-Then put one token per line in `xtoken.txt`:
-
-```text
-auth_token_value|ct0_value
-```
-
-Connected tokens are moved to `x_connected.txt`. Invalid/dead tokens are removed from `xtoken.txt`.
-
-If Xeffy changes the endpoint, set `connect_x_endpoint` in `config.json`.
-
-## Run
-
-CLI:
+After setup, run the CLI with:
 
 ```bat
 run.bat
 ```
 
-Local web GUI:
+You can also use the local web control panel:
 
 ```bat
 gui.bat
@@ -117,19 +35,131 @@ Then open:
 http://127.0.0.1:8787
 ```
 
-The GUI can edit root files, save config, start/stop the bot, and show live logs.
+## Main Files
+
+`xeffy_bot.py` is the main CLI bot. It loads accounts, logs in to Xeffy, connects X when enabled, runs check-in, submits tasks, answers quizzes, exports results, and updates token files.
+
+`web_gui.py` starts the local browser control panel. The GUI can edit the root text files, save config, start or stop the bot, and show live logs.
+
+`xeffy_x_tools.py` is a helper for X connection troubleshooting. It can check whether a Telegram/Xeffy account currently has X connected and can call the unlink endpoint for that same account.
+
+The root `.txt` files are simple input files. Each non-empty line is used as one item, and lines starting with `#` are ignored.
+
+## Telegram Accounts
+
+Use either session files or WebApp query/initData. Session files are better for full mode because they can open the Telegram Mini App and join Telegram channels. `data.txt` query accounts can check in and submit tasks, but they cannot join channels.
+
+Put `.session` files inside `sessions/`. Pyrogram v2 session files run directly. Telethon session files are auto-converted into `.converted_sessions/` at runtime, and the original files in `sessions/` are not modified.
+
+The safest account layout is explicit numbering. Rename your Telegram session files like this:
+
+```text
+sessions/1.session
+sessions/2.session
+sessions/3.session
+sessions/4.session
+sessions/5.session
+```
+
+Then write the same order in `sessions.txt`:
+
+```text
+sessions/1.session
+sessions/2.session
+sessions/3.session
+sessions/4.session
+sessions/5.session
+```
+
+This removes sorting confusion. If `sessions.txt` only contains `sessions`, the bot loads all `.session` files in sorted filename order. That can be confusing when names like `1.session`, `2.session`, and `10.session` are mixed.
+
+## X Token Mapping
+
+When `auto_connect_x` is enabled, the bot maps Telegram account number to X token line number. Account 1 uses line 1 from `xtoken.txt`, account 2 uses line 2, account 3 uses line 3, and so on.
+
+Example:
+
+```text
+sessions/1.session -> xtoken.txt line 1
+sessions/2.session -> xtoken.txt line 2
+sessions/3.session -> xtoken.txt line 3
+```
+
+Write `xtoken.txt` in the same order:
+
+```text
+auth_token_for_1|ct0_for_1
+auth_token_for_2|ct0_for_2
+auth_token_for_3|ct0_for_3
+```
+
+Keep a private note if you manage many accounts:
+
+```text
+1 | sessions/1.session | TG: @telegram1 | X: @xuser1 | xtoken line 1
+2 | sessions/2.session | TG: @telegram2 | X: @xuser2 | xtoken line 2
+3 | sessions/3.session | TG: @telegram3 | X: @xuser3 | xtoken line 3
+```
+
+Connected X tokens are moved to `x_connected.txt`. Invalid or dead tokens are removed from `xtoken.txt`. Tokens that return `account_already_linked` are moved to `x_already_linked.txt` so the bot does not retry the same bad token again and again.
+
+If Xeffy says an X account is already linked to another Xeffy user, the current Telegram account cannot disconnect it because the current account has no linked X identity. You must either run unlink from the old Telegram/Xeffy account that owns that X link, or replace the token with a fresh X account that was not linked before.
+
+## X Check And Unlink Helper
+
+Use this command to check whether a Telegram/Xeffy account has X connected:
+
+```bat
+.venv\Scripts\python.exe xeffy_x_tools.py check --account-number 1
+```
+
+Use this command to unlink X from that same Telegram/Xeffy account:
+
+```bat
+.venv\Scripts\python.exe xeffy_x_tools.py unlink --account-number 1
+```
+
+Unlink only works when the selected Telegram account is the account that currently owns the X link. If the account is not connected, Xeffy returns `ACCOUNT_NOT_FOUND`.
+
+## Quiz Answers
+
+For quiz tasks, the bot first tries to use any correct answer information already present in the task response. If that is missing, it reads `answers.txt`.
+
+You can put an answer index:
+
+```text
+0
+```
+
+You can also put the exact option text:
+
+```text
+$Xef
+```
+
+If the quiz options are `$Xef`, `$X`, and `$P`, the bot matches `$Xef` and submits `quizSelectedIndex: 0`. Text matching ignores case and extra spaces, but it does not do fuzzy guessing. This keeps quiz answering predictable.
+
+## Referral
+
+Put a referral link or start parameter in `ref.txt`:
+
+```text
+https://t.me/Xeffy_Bot?start=ref_5005957731
+```
+
+For session-file accounts, the bot sends `/start ref_...` and passes the same value as the Mini App start parameter. For `data.txt` accounts, capture the WebApp query/initData using the referral link first.
 
 ## Modes
 
-| Mode | Work |
-| --- | --- |
-| Full | Join channels, check-in, tasks |
-| Daily | Check-in and tasks |
-| Check-in | Check-in only |
+Full mode joins Telegram channel/group links from `channel.txt`, runs check-in, and submits tasks.
+
+Daily mode runs check-in and submits tasks, but it does not join channels.
+
+Check-in mode only runs daily check-in. It is useful when you want to test account login without submitting tasks.
 
 ## Config
 
-Important settings:
+Important settings live in `config.json`:
 
 ```json
 {
@@ -138,27 +168,46 @@ Important settings:
   "join_enabled": true,
   "checkin_enabled": true,
   "proxy_enabled": false,
-  "auto_connect_x": false,
+  "auto_connect_x": true,
   "auto_quiz_answer": true,
   "export_csv": true,
   "export_points": true
 }
 ```
 
-Keep `threads` at `1` until your sessions/proxies are stable.
+Keep `threads` at `1` until your sessions, proxies, and X token order are confirmed. After everything is stable, you can increase it carefully.
+
+## Proxies And User Agents
+
+Put proxies in `proxy.txt` if `proxy_enabled` is true. Supported formats are:
+
+```text
+ip:port
+ip:port:user:pass
+http://user:pass@ip:port
+```
+
+Put browser user agents in `useragents.txt` if you want rotation. If the file is empty or only contains placeholders, the bot uses a default Android Chrome user agent.
+
+## Exports
+
+Run results are written to `exports/` when export is enabled. The export includes account number, source, Telegram user, login status, X connect status, check-in status, task counts, points, final status, and error message.
+
+## Session Errors
+
+`missing version.number column` or `no such column: number` usually means the `.session` file is not a Pyrogram v2 session database. Telethon sessions are supported and converted automatically when possible. If conversion fails, the session is probably expired, logged out, corrupt, or made by another library.
+
+Use one of these instead:
+
+```text
+a fresh Pyrogram v2 session file
+a fresh Telethon session file
+a Pyrogram session string in sessions.txt
+a valid Xeffy WebApp query/initData line in data.txt
+```
 
 ## Safety
 
-Do not commit real `.session` files, `.env`, real `initData`, proxies, or X tokens. Treat them like passwords.
+Do not commit real `.session` files, `.env`, real initData, proxies, or X tokens. Treat them like passwords. Anyone with these values may be able to access your accounts.
 
-## Session Error
-
-`missing version.number column` or `no such column: number` means the `.session` file is not a Pyrogram v2 session database.
-
-Telethon `.session` files are supported automatically. The bot creates a Pyrogram-compatible copy in `.converted_sessions/` and leaves the original file untouched.
-
-If it still fails, the session is probably from another bot/library, expired, logged out, or corrupt. Use one of these instead:
-
-- a fresh Pyrogram v2 or Telethon `.session` file
-- a Pyrogram session string in `sessions.txt`
-- a valid Xeffy WebApp query/initData line in `data.txt`
+The repository ignores session files, converted sessions, virtualenv files, exports, connected-token files, and common binary archives. Keep your private runtime files local.
