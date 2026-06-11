@@ -1,4 +1,4 @@
-# Optional fallback quiz answer index.
-# Index starts from 0. The bot first tries to detect the correct quiz answer from task JSON.
-#
-# 0
+# Quiz answer = the option number shown in the app.
+# It is 1-based: 1 = first option, 2 = second option, 3 = third option, ...
+# Example: if the correct answer is the 2nd option in the list, write 2 below.
+2

@@ -131,21 +131,31 @@ Unlink only works when the selected Telegram account is the account that current
 
 ## Quiz Answers
 
-For quiz tasks, the bot first tries to use any correct answer information already present in the task response. If that is missing, it reads `answers.txt`.
+For quiz tasks the bot reads `answers.txt`. The recommended and most reliable way to answer is to put the **option number** exactly as it is shown in the app. The number is 1-based: `1` is the first option, `2` is the second option, and so on.
 
-You can put an answer index:
-
-```text
-0
-```
-
-You can also put the exact option text:
+Example: the quiz shows
 
 ```text
-$Xef
+1. Meko | Xeffy
+2. Charlie | Xeffy
+3. Eric | Xeffy
 ```
 
-If the quiz options are `$Xef`, `$X`, and `$P`, the bot matches `$Xef` and submits `quizSelectedIndex: 0`. Text matching ignores case and extra spaces, but it does not do fuzzy guessing. This keeps quiz answering predictable.
+If the correct answer is `Charlie | Xeffy` (the second option), put:
+
+```text
+2
+```
+
+The bot converts that to the 0-based value the API expects and submits `quizSelectedIndex: 1`. The number method works even when the option text is not included in the task response, which is why it is preferred. When the run starts you will see a line such as `[QUIZ] Xeffy Daily Quiz -> option #2: Charlie | Xeffy` so you can confirm the right option was picked.
+
+You can still put the exact option text instead of a number (case and extra spaces are ignored, but there is no fuzzy guessing):
+
+```text
+Charlie | Xeffy
+```
+
+Answer resolution order: the option number in `answers.txt` (or `quiz_answer_index` in `config.json`, also 1-based) is used first, then an exact text match, then any correct-answer hint the task response happens to expose (`auto_quiz_answer`).
 
 ## Referral
 

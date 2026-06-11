@@ -82,11 +82,32 @@ POINT_KEYS = {
     "scores",
     "totalpoint",
     "totalpoints",
+    "totalpointamount",
     "totalpointsamount",
+    "totalscore",
+    "pointsamount",
+    "pointamount",
     "rewardpoint",
     "rewardpoints",
     "balance",
+    "xp",
+    "totalxp",
     "xef",
+    "totalxef",
+    "xefpoints",
+}
+
+# Keys used to dig a numeric value out of a nested points object such as
+# {"points": {"total": 1234}} or {"points": {"amount": 1234}}.
+POINT_NESTED_KEYS = {
+    "total",
+    "amount",
+    "value",
+    "count",
+    "current",
+    "balance",
+    "points",
+    "point",
 }
 
 X_TASK_KINDS = {
@@ -264,14 +285,29 @@ def session_sort_key(path):
     return (1, str(path).lower())
 
 
+def quiz_number_to_index(value):
+    """Convert a manual answer number into a 0-based quiz option index.
+
+    The number is the option position as it appears in the app (1 = first
+    option, 2 = second option, ...). The API expects a 0-based index, so we
+    subtract one. ``0`` is kept as the first option for backward compatibility.
+    """
+    number = as_optional_int(value)
+    if number is None:
+        return None
+    return number - 1 if number >= 1 else 0
+
+
 def load_quiz_answer(config=None):
     if config:
-        config_answer = as_optional_int(config.get("quiz_answer_index"))
-        if config_answer is not None:
-            return config_answer
+        config_index = quiz_number_to_index(config.get("quiz_answer_index"))
+        if config_index is not None:
+            return config_index
 
     for val in load_file("answers.txt"):
-        return int(val) if val.isdigit() else None
+        index = quiz_number_to_index(val)
+        if index is not None:
+            return index
 
     return None
 
@@ -1454,18 +1490,22 @@ def connect_x_account(session_token, x_token, user_agent, proxy, config):
 
 
 def get_account_stats(session_token, user_agent, proxy, config):
+    # Campaign-scoped endpoints carry the contributor points, so query them
+    # first. We gather every successful response (not just the first) because
+    # generic endpoints like /me often answer without any points field.
     endpoints = [
+        f"/campaigns/{CAMPAIGN_ID}/leaderboard/me",
+        f"/campaigns/{CAMPAIGN_ID}/me",
+        f"/campaigns/{CAMPAIGN_ID}/summary",
+        f"/campaigns/{CAMPAIGN_ID}/profile",
         "/me",
         "/users/me",
         "/members/me",
         "/profile",
         "/be-auth/me",
-        f"/campaigns/{CAMPAIGN_ID}/me",
-        f"/campaigns/{CAMPAIGN_ID}/profile",
-        f"/campaigns/{CAMPAIGN_ID}/summary",
-        f"/campaigns/{CAMPAIGN_ID}/leaderboard/me",
     ]
 
+    responses = []
     for endpoint in endpoints:
         try:
             r = req.get(
@@ -1480,25 +1520,63 @@ def get_account_stats(session_token, user_agent, proxy, config):
         if r.status_code == 200:
             data = safe_json(r)
             if data:
-                return data
+                responses.append(data)
 
+    return responses
+
+
+def coerce_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        cleaned = value.replace(",", "").strip()
+        if not cleaned:
+            return None
+        try:
+            return int(cleaned)
+        except ValueError:
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
     return None
 
 
+def iter_values_by_keys(data, normalized_keys):
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if normalize_key(key) in normalized_keys:
+                yield value
+        for value in data.values():
+            yield from iter_values_by_keys(value, normalized_keys)
+    elif isinstance(data, list):
+        for item in data:
+            yield from iter_values_by_keys(item, normalized_keys)
+
+
 def extract_points(*objects):
+    point_keys = {normalize_key(key) for key in POINT_KEYS}
+    nested_keys = {normalize_key(key) for key in POINT_NESTED_KEYS} | point_keys
+    fallback = None
+
     for data in objects:
-        value = find_value_by_keys(data, POINT_KEYS)
-        if value in (None, ""):
-            continue
-        if isinstance(value, (int, float)):
-            return value
-        if isinstance(value, str):
-            cleaned = value.replace(",", "").strip()
-            try:
-                return int(cleaned) if cleaned.isdigit() else float(cleaned)
-            except ValueError:
+        for value in iter_values_by_keys(data, point_keys):
+            number = coerce_number(value)
+            if number is None and isinstance(value, (dict, list)):
+                for nested in iter_values_by_keys(value, nested_keys):
+                    number = coerce_number(nested)
+                    if number is not None:
+                        break
+            if number is None:
                 continue
-    return ""
+            if number:
+                return number
+            if fallback is None:
+                fallback = number
+
+    return fallback if fallback is not None else ""
 
 
 def describe_account_source(source):
@@ -1903,17 +1981,39 @@ def infer_quiz_answer(task):
     return None
 
 
-def build_quiz_proof(task, config):
-    answer_index = None
-    if config.get("auto_quiz_answer", True):
-        answer_index = infer_quiz_answer(task)
+def first_quiz_option_list(task):
+    for options in iter_quiz_option_lists(task):
+        if options:
+            return options
+    return None
 
+
+def quiz_option_label(task, index):
+    if index is None:
+        return ""
+    options = first_quiz_option_list(task)
+    if not options or index < 0 or index >= len(options):
+        return ""
+    values = option_text_values(options[index])
+    return values[0] if values else ""
+
+
+def build_quiz_proof(task, config):
     answer_lines = load_quiz_answer_lines()
+
+    # 1) Manual answer number from answers.txt / config. The number is the
+    #    option position shown in the app (1 = first option). This is the
+    #    reliable path because it does not depend on the option text being
+    #    present in the task payload.
+    answer_index = load_quiz_answer(config)
+
+    # 2) Exact option-text match from answers.txt (legacy text answers).
     if answer_index is None:
         answer_index = infer_quiz_answer_from_text(task, answer_lines)
 
-    if answer_index is None:
-        answer_index = load_quiz_answer(config)
+    # 3) Correct-answer hint embedded in the task response, if any.
+    if answer_index is None and config.get("auto_quiz_answer", True):
+        answer_index = infer_quiz_answer(task)
 
     if answer_index is None:
         return None
@@ -2240,6 +2340,12 @@ async def run_account(
             if proof is None:
                 print(f"[Account {index}] [WARN] Skipping quiz; no answer found: {task_name}")
                 continue
+            selected = proof.get("quizSelectedIndex")
+            label = quiz_option_label(task, selected)
+            label_suffix = f": {label}" if label else ""
+            print(
+                f"[Account {index}] [QUIZ] {task_name} -> option #{selected + 1}{label_suffix}"
+            )
         else:
             proof = {}
 
