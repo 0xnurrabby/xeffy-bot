@@ -164,12 +164,18 @@ def start_bot(options, submitted_mode=""):
             "--account-number",
             options["account_number"],
         ]
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         BOT_PROCESS = subprocess.Popen(
             command,
             cwd=ROOT,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="backslashreplace",
+            env=env,
         )
         return True
 

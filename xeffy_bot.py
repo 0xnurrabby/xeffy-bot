@@ -3,9 +3,11 @@ import asyncio
 import csv
 import hashlib
 import json
+import msvcrt
 import os
 import random
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 import urllib.parse
@@ -16,12 +18,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+except AttributeError:
+    pass
+
 BOT_USERNAME = "Xeffy_Bot"
 MINI_APP_SHORTNAME = "xeffy_app"
 ORG_SLUG = "xeffy"
 CAMPAIGN_ID = "447eb124-e731-4853-be60-39aae9bb0127"
 BASE_URL = "https://api.go.xeffy.io/api/mini"
 CONVERTED_SESSION_DIR = Path(".converted_sessions")
+RUN_LOCK_PATH = Path(".web_runs") / "bot.lock"
 PYROGRAM_SESSION_VERSION = 3
 X_OAUTH_AUTHORIZE_URL = "https://api.x.com/2/oauth2/authorize"
 X_WEB_BEARER = (
@@ -180,6 +189,34 @@ X_IDENTITY_PROVIDER_KEYS = {
 Client = None
 RequestWebView = None
 PYROGRAM_IMPORT_ERROR = None
+
+
+def acquire_run_lock():
+    RUN_LOCK_PATH.parent.mkdir(exist_ok=True)
+    lock_file = open(RUN_LOCK_PATH, "a+", encoding="utf-8")
+    try:
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        return lock_file
+    except OSError:
+        lock_file.close()
+        return None
+
+
+def release_run_lock(lock_file):
+    if lock_file is None:
+        return
+    try:
+        lock_file.seek(0)
+        lock_file.truncate()
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    lock_file.close()
 
 
 def as_bool(value, default=False):
@@ -2750,6 +2787,18 @@ def select_indices(total, selection=None, account_number=None):
 
 
 async def main(selection=None, mode=None, account_number=None):
+    run_lock = acquire_run_lock()
+    if run_lock is None:
+        print("[FAIL] Another Xeffy bot run is already active. Stop it before starting again.")
+        return
+
+    try:
+        await run_main(selection, mode, account_number)
+    finally:
+        release_run_lock(run_lock)
+
+
+async def run_main(selection=None, mode=None, account_number=None):
     config = load_config()
     accounts = load_account_sources()
     query_count = len([source for source in accounts if source["type"] == "query"])
