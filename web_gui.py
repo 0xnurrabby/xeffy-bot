@@ -63,6 +63,22 @@ MODE_LABELS = {
     "checkin": "Check-in only",
 }
 
+POINT_COLUMNS = {
+    "points",
+    "point",
+    "total_points",
+    "totalpoints",
+    "total_point",
+    "totalpoint",
+    "score",
+    "total_score",
+    "totalscore",
+    "balance",
+    "xef",
+    "total_xef",
+    "totalxef",
+}
+
 
 def active_lines(path):
     return [
@@ -219,6 +235,24 @@ def as_number(value):
     return int(number) if number.is_integer() else number
 
 
+def normalized_key(value):
+    return str(value).replace("_", "").replace("-", "").strip().lower()
+
+
+def row_points(row):
+    point_columns = {normalized_key(key) for key in POINT_COLUMNS}
+    fallback = 0
+    for key, value in row.items():
+        if normalized_key(key) not in point_columns:
+            continue
+        number = as_number(value)
+        if number:
+            return number
+        if str(value or "").strip():
+            fallback = number
+    return fallback
+
+
 def format_number(value):
     if isinstance(value, float) and not value.is_integer():
         return f"{value:,.2f}".rstrip("0").rstrip(".")
@@ -236,7 +270,7 @@ def latest_run_summary():
             rows = []
 
     total_accounts = len(rows) if rows else account_count()
-    total_points = sum(as_number(row.get("points")) for row in rows)
+    total_points = sum(row_points(row) for row in rows)
     submitted_tasks = sum(as_number(row.get("tasks_submitted")) for row in rows)
     skipped_tasks = sum(as_number(row.get("tasks_skipped")) for row in rows)
     failed_tasks = sum(as_number(row.get("tasks_failed")) for row in rows)

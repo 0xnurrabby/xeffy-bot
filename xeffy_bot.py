@@ -89,6 +89,21 @@ POINT_KEYS = {
     "pointamount",
     "rewardpoint",
     "rewardpoints",
+    "earnedpoint",
+    "earnedpoints",
+    "campaignpoint",
+    "campaignpoints",
+    "campaignscore",
+    "contributionpoint",
+    "contributionpoints",
+    "contributorpoint",
+    "contributorpoints",
+    "userpoint",
+    "userpoints",
+    "mypoint",
+    "mypoints",
+    "pointbalance",
+    "pointsbalance",
     "balance",
     "xp",
     "totalxp",
@@ -106,6 +121,9 @@ POINT_NESTED_KEYS = {
     "count",
     "current",
     "balance",
+    "earned",
+    "available",
+    "score",
     "points",
     "point",
 }
@@ -294,6 +312,8 @@ def quiz_number_to_index(value):
     """
     number = as_optional_int(value)
     if number is None:
+        return None
+    if number < 0:
         return None
     return number - 1 if number >= 1 else 0
 
@@ -1998,6 +2018,16 @@ def quiz_option_label(task, index):
     return values[0] if values else ""
 
 
+def quiz_index_in_range(task, index):
+    options = first_quiz_option_list(task)
+    return not options or 0 <= index < len(options)
+
+
+def quiz_option_count(task):
+    options = first_quiz_option_list(task)
+    return len(options) if options else 0
+
+
 def build_quiz_proof(task, config):
     answer_lines = load_quiz_answer_lines()
 
@@ -2016,6 +2046,9 @@ def build_quiz_proof(task, config):
         answer_index = infer_quiz_answer(task)
 
     if answer_index is None:
+        return None
+
+    if not quiz_index_in_range(task, answer_index):
         return None
 
     return {"quizSelectedIndex": answer_index}
@@ -2338,7 +2371,16 @@ async def run_account(
         if is_quiz_task(task):
             proof = build_quiz_proof(task, config)
             if proof is None:
-                print(f"[Account {index}] [WARN] Skipping quiz; no answer found: {task_name}")
+                option_count = quiz_option_count(task)
+                suffix = (
+                    f"; answer must be between 1 and {option_count}"
+                    if option_count
+                    else ""
+                )
+                print(
+                    f"[Account {index}] [WARN] Skipping quiz; no valid answer found: "
+                    f"{task_name}{suffix}"
+                )
                 continue
             selected = proof.get("quizSelectedIndex")
             label = quiz_option_label(task, selected)
