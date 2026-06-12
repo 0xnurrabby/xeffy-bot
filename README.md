@@ -217,6 +217,10 @@ Run results are written to `exports/` when export is enabled. The export include
 
 If a session is already Pyrogram-compatible, the bot uses it directly and no converted copy is needed. If a session is Telethon, the bot creates a Pyrogram-compatible copy inside `.converted_sessions/` and leaves the original file untouched. You can delete `.converted_sessions/`; the bot will recreate what it needs on the next run.
 
+`AUTH_KEY_DUPLICATED` means Telegram saw the same session auth key being used in more than one place at the same time. Telegram may revoke that key, so the old `.session` cannot be repaired by the bot. The bot now handles this safely: generated converted sessions are deleted, direct session files are moved to a `.bak` file, and the run continues with the next account.
+
+By default `logout_other_tg_sessions` and `preserve_mobile_tg_sessions` are enabled in `config.json`. When a session is still valid, the bot logs in with that current session first, then terminates other non-mobile Telegram sessions for the same account before continuing. Android, iPhone, iPad, iOS, and unknown/mobile-looking sessions are kept so your phone login stays active. If the session has already been revoked, create a fresh Pyrogram or Telethon `.session` file for that account and rerun.
+
 Use one of these instead:
 
 ```text

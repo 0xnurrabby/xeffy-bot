@@ -57,6 +57,8 @@ DEFAULT_CONFIG = {
     "repeat_interval": 300,
     "proxy_enabled": False,
     "auto_connect_x": False,
+    "logout_other_tg_sessions": True,
+    "preserve_mobile_tg_sessions": True,
     "preserve_x_token_lines": True,
     "connect_x_endpoint": "",
     "auto_quiz_answer": True,
@@ -188,6 +190,9 @@ X_IDENTITY_PROVIDER_KEYS = {
 
 Client = None
 RequestWebView = None
+GetAuthorizations = None
+ResetAuthorization = None
+AuthKeyDuplicated = None
 PYROGRAM_IMPORT_ERROR = None
 
 
@@ -274,6 +279,8 @@ def normalize_config(config):
         "repeat_enabled",
         "proxy_enabled",
         "auto_connect_x",
+        "logout_other_tg_sessions",
+        "preserve_mobile_tg_sessions",
         "preserve_x_token_lines",
         "auto_quiz_answer",
         "x_task_actions",
@@ -747,9 +754,16 @@ def has_meaningful_value(value):
 
 
 def ensure_pyrogram():
-    global Client, RequestWebView, PYROGRAM_IMPORT_ERROR
+    global Client, RequestWebView, GetAuthorizations, ResetAuthorization
+    global AuthKeyDuplicated, PYROGRAM_IMPORT_ERROR
 
-    if Client is not None and RequestWebView is not None:
+    if (
+        Client is not None
+        and RequestWebView is not None
+        and GetAuthorizations is not None
+        and ResetAuthorization is not None
+        and AuthKeyDuplicated is not None
+    ):
         return True
 
     try:
@@ -759,6 +773,11 @@ def ensure_pyrogram():
 
     try:
         from pyrogram import Client as PyrogramClient
+        from pyrogram.errors import AuthKeyDuplicated as PyrogramAuthKeyDuplicated
+        from pyrogram.raw.functions.account import (
+            GetAuthorizations as PyrogramGetAuthorizations,
+            ResetAuthorization as PyrogramResetAuthorization,
+        )
         from pyrogram.raw.functions.messages import RequestWebView as PyrogramRequestWebView
     except ImportError as e:
         PYROGRAM_IMPORT_ERROR = str(e)
@@ -766,6 +785,9 @@ def ensure_pyrogram():
 
     Client = PyrogramClient
     RequestWebView = PyrogramRequestWebView
+    GetAuthorizations = PyrogramGetAuthorizations
+    ResetAuthorization = PyrogramResetAuthorization
+    AuthKeyDuplicated = PyrogramAuthKeyDuplicated
     return True
 
 
@@ -1645,6 +1667,13 @@ def describe_account_source(source):
     return "session_string"
 
 
+def is_auth_key_duplicated_error(error):
+    if AuthKeyDuplicated is not None and isinstance(error, AuthKeyDuplicated):
+        return True
+
+    return "AUTH_KEY_DUPLICATED" in str(error).upper()
+
+
 PYROGRAM_SESSION_SCHEMA = """
 CREATE TABLE sessions
 (
@@ -1762,6 +1791,30 @@ def invalid_pyrogram_session_message(schema):
 def converted_session_path(source, source_path):
     key = hashlib.sha256(str(source_path.resolve()).encode("utf-8")).hexdigest()[:12]
     return CONVERTED_SESSION_DIR / f"{source['name']}_pyrogram_{key}.session"
+
+
+def quarantine_session_file_for_source(source, reason="bad_auth_key"):
+    session_path = session_path_from_source(source)
+    if source.get("converted_from"):
+        try:
+            session_path.unlink()
+            return f"deleted stale converted session file: {session_path}"
+        except FileNotFoundError:
+            return f"stale converted session file already missing: {session_path}"
+        except OSError as e:
+            return f"could not delete stale converted session file {session_path}: {e}"
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    quarantine_path = session_path.with_name(
+        f"{session_path.name}.{reason}_{stamp}.bak"
+    )
+    try:
+        session_path.replace(quarantine_path)
+        return f"moved broken session file to: {quarantine_path}"
+    except FileNotFoundError:
+        return f"broken session file already missing: {session_path}"
+    except OSError as e:
+        return f"could not move broken session file {session_path}: {e}"
 
 
 def convert_telethon_session_file(source):
@@ -1895,6 +1948,116 @@ async def apply_referral(app, account_index, ref_start_param):
         await asyncio.sleep(1)
     except Exception as e:
         print(f"[Account {account_index}] [WARN] Referral start failed: {e}")
+
+
+def authorization_text(authorization):
+    parts = [
+        getattr(authorization, "device_model", ""),
+        getattr(authorization, "platform", ""),
+        getattr(authorization, "system_version", ""),
+        getattr(authorization, "app_name", ""),
+    ]
+    return " ".join(str(part or "") for part in parts).strip()
+
+
+def is_mobile_tg_authorization(authorization):
+    text = authorization_text(authorization).lower()
+    if not text:
+        return True
+
+    mobile_markers = {
+        "android",
+        "ios",
+        "iphone",
+        "ipad",
+        "telegram android",
+        "telegram ios",
+        "telegram x",
+    }
+    return any(marker in text for marker in mobile_markers)
+
+
+async def terminate_other_tg_sessions(app, account_index, preserve_mobile=True):
+    try:
+        authorizations = await app.invoke(GetAuthorizations())
+    except Exception as e:
+        print(f"[Account {account_index}] [WARN] Could not list Telegram sessions: {e}")
+        return
+
+    other_authorizations = [
+        authorization
+        for authorization in getattr(authorizations, "authorizations", [])
+        if not getattr(authorization, "current", False)
+    ]
+
+    if not other_authorizations:
+        print(f"[Account {account_index}] [OK] No other Telegram sessions found")
+        return
+
+    skipped_mobile = 0
+    others = []
+    for authorization in other_authorizations:
+        if preserve_mobile and is_mobile_tg_authorization(authorization):
+            skipped_mobile += 1
+            device = authorization_text(authorization) or "mobile/unknown device"
+            print(f"[Account {account_index}] [SKIP] Keeping mobile TG session: {device}")
+            continue
+        others.append(authorization)
+
+    if not others:
+        print(
+            f"[Account {account_index}] [OK] No non-mobile Telegram sessions to terminate"
+        )
+        return
+
+    terminated = 0
+    failed = 0
+    for authorization in others:
+        try:
+            await app.invoke(ResetAuthorization(hash=authorization.hash))
+            terminated += 1
+        except Exception as e:
+            failed += 1
+            device = getattr(authorization, "device_model", "unknown device")
+            print(
+                f"[Account {account_index}] [WARN] Could not terminate "
+                f"{device}: {e}"
+            )
+        await asyncio.sleep(0.3)
+
+    if terminated:
+        print(
+            f"[Account {account_index}] [OK] "
+            f"Terminated {terminated} non-mobile TG session(s)"
+        )
+    if skipped_mobile:
+        print(f"[Account {account_index}] [OK] Kept {skipped_mobile} mobile TG session(s)")
+    if failed:
+        print(f"[Account {account_index}] [WARN] {failed} TG session(s) could not be terminated")
+
+
+def print_auth_key_duplicated_help(account_index, source, prepared_source):
+    print(
+        f"[Account {account_index}] [FAIL] Telegram session was used in another place "
+        "at the same time, so Telegram invalidated this auth key."
+    )
+    if source["type"] == "file" and prepared_source:
+        cleanup = quarantine_session_file_for_source(
+            prepared_source,
+            "auth_key_duplicated",
+        )
+        print(f"[Account {account_index}] [OK] {cleanup}")
+        if prepared_source.get("converted_from"):
+            cleanup = quarantine_session_file_for_source(
+                source,
+                "auth_key_duplicated",
+            )
+            print(f"[Account {account_index}] [OK] {cleanup}")
+    print(
+        f"[Account {account_index}] Make a fresh .session for this Telegram account, "
+        "then rerun. A valid fresh session can terminate other Telegram sessions "
+        "automatically before continuing."
+    )
 
 
 async def get_init_data(app, account_index, ref_start_param=None):
@@ -2185,6 +2348,7 @@ async def run_account(
             "api_hash": API_HASH,
         }
 
+        prepared_source = None
         if source["type"] == "file":
             prepared_source, session_error = prepare_pyrogram_file_session(source)
             if session_error:
@@ -2214,6 +2378,13 @@ async def run_account(
                 result["telegram_user"] = username
                 result["telegram_id"] = str(me.id)
                 print(f"[Account {index}] {username} ({me.id})")
+
+                if config.get("logout_other_tg_sessions", True):
+                    await terminate_other_tg_sessions(
+                        app,
+                        index,
+                        config.get("preserve_mobile_tg_sessions", True),
+                    )
 
                 await apply_referral(app, index, ref_start_param)
 
@@ -2245,6 +2416,13 @@ async def run_account(
             result["status"] = "failed"
             result["error"] = f"session sqlite error: {e}"
             print(f"[Account {index}] [FAIL] Session sqlite error: {e}")
+            return result
+        except Exception as e:
+            if not is_auth_key_duplicated_error(e):
+                raise
+            result["status"] = "failed"
+            result["error"] = "telegram auth key duplicated; fresh session required"
+            print_auth_key_duplicated_help(index, source, prepared_source)
             return result
 
     if proxy:
